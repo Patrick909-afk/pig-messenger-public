@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:cryptography/cryptography.dart';
+import 'package:mime/mime.dart';
 
 const _supabaseUrl = String.fromEnvironment(
   'SUPABASE_URL',
@@ -1413,6 +1414,7 @@ class _ChatPageState extends State<ChatPage> {
     final name = (picked.name.isEmpty ? 'file_${DateTime.now().millisecondsSinceEpoch}' : picked.name)
         .replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
     final objectPath = '${widget.conversationId}/${DateTime.now().millisecondsSinceEpoch}_$name';
+    final inferredMime = lookupMimeType(picked.name) ?? 'application/octet-stream';
 
     try {
       await _db.storage.from('chat-media').uploadBinary(
@@ -1420,7 +1422,7 @@ class _ChatPageState extends State<ChatPage> {
             bytes,
             fileOptions: FileOptions(
               upsert: false,
-              contentType: picked.mimeType ?? 'application/octet-stream',
+              contentType: inferredMime,
             ),
           );
 
@@ -1433,7 +1435,7 @@ class _ChatPageState extends State<ChatPage> {
         'message_type': type,
         'media_url': url,
         'file_name': picked.name,
-        'mime_type': picked.mimeType,
+        'mime_type': inferredMime,
       });
     } catch (e) {
       if (!mounted) return;
