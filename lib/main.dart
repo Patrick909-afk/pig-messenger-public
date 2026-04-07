@@ -679,9 +679,18 @@ class _FriendsPageState extends State<FriendsPage> {
   }
 
   Future<void> _loadAll() async {
-    await Future.wait([_loadFriends(), _loadGroups(), _loadSuggested()]);
-    if (!mounted) return;
-    setState(() => _loading = false);
+    try {
+      await Future.wait([_loadFriends(), _loadGroups(), _loadSuggested()]);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Ошибка загрузки данных: $e')),
+        );
+      }
+    } finally {
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
   }
 
   Future<void> _loadFriends() async {
@@ -732,14 +741,37 @@ class _FriendsPageState extends State<FriendsPage> {
       return;
     }
 
-    final rows = await _db
-        .from('conversations')
-        .select('id, title, description, icon_url, updated_at')
-        .inFilter('id', ids)
-        .eq('is_group', true)
-        .order('updated_at', ascending: false);
+    List<Map<String, dynamic>> groups = [];
+    try {
+      final rows = await _db
+          .from('conversations')
+          .select('id, title, description, icon_url, updated_at')
+          .inFilter('id', ids)
+          .eq('is_group', true)
+          .order('updated_at', ascending: false);
+      groups = List<Map<String, dynamic>>.from(rows);
+    } catch (e) {
+      final text = e.toString().toLowerCase();
+      if (text.contains('42703') || text.contains('description')) {
+        final rows = await _db
+            .from('conversations')
+            .select('id, title, updated_at')
+            .inFilter('id', ids)
+            .eq('is_group', true)
+            .order('updated_at', ascending: false);
+        groups = List<Map<String, dynamic>>.from(rows)
+            .map((g) => {
+                  ...g,
+                  'description': null,
+                  'icon_url': null,
+                })
+            .toList();
+      } else {
+        rethrow;
+      }
+    }
 
-    final groups = List<Map<String, dynamic>>.from(rows).map((g) {
+    groups = groups.map((g) {
       g['my_role'] = roleByConversation[g['id'].toString()] ?? 'member';
       return g;
     }).toList();
@@ -1006,15 +1038,31 @@ class _FriendsPageState extends State<FriendsPage> {
 
     if (ok != true) return;
 
-    final conversationId = await _db.rpc(
-      'create_group_chat',
-      params: {
-        'group_title': titleCtrl.text.trim(),
-        'member_ids': selected.toList(),
-        'group_description': descriptionCtrl.text.trim(),
-        'group_icon_url': iconCtrl.text.trim(),
-      },
-    ) as String;
+    String conversationId;
+    try {
+      conversationId = await _db.rpc(
+        'create_group_chat',
+        params: {
+          'group_title': titleCtrl.text.trim(),
+          'member_ids': selected.toList(),
+          'group_description': descriptionCtrl.text.trim(),
+          'group_icon_url': iconCtrl.text.trim(),
+        },
+      ) as String;
+    } catch (e) {
+      final text = e.toString().toLowerCase();
+      if (text.contains('42703') || text.contains('function') || text.contains('create_group_chat')) {
+        conversationId = await _db.rpc(
+          'create_group_chat',
+          params: {
+            'group_title': titleCtrl.text.trim(),
+            'member_ids': selected.toList(),
+          },
+        ) as String;
+      } else {
+        rethrow;
+      }
+    }
 
     await _loadGroups();
     if (!mounted) return;
