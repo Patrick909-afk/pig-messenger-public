@@ -556,13 +556,15 @@ class FriendsPage extends StatefulWidget {
 class _FriendsPageState extends State<FriendsPage> {
   final _search = TextEditingController();
   List<Map<String, dynamic>> _friends = const [];
+  List<Map<String, dynamic>> _groups = const [];
   bool _loading = true;
+  int _tab = 0; // 0 friends, 1 groups
 
   @override
   void initState() {
     super.initState();
     _touchLastSeen();
-    _loadFriends();
+    _loadAll();
   }
 
   Future<void> _touchLastSeen() async {
@@ -585,6 +587,12 @@ class _FriendsPageState extends State<FriendsPage> {
     return '${tr(lang, 'last_seen')}${timeago.format(dt.toLocal(), locale: 'en_short')}';
   }
 
+  Future<void> _loadAll() async {
+    await Future.wait([_loadFriends(), _loadGroups()]);
+    if (!mounted) return;
+    setState(() => _loading = false);
+  }
+
   Future<void> _loadFriends() async {
     final current = _db.auth.currentUser;
     if (current == null) return;
@@ -599,7 +607,48 @@ class _FriendsPageState extends State<FriendsPage> {
     if (!mounted) return;
     setState(() {
       _friends = List<Map<String, dynamic>>.from(rows);
-      _loading = false;
+    });
+  }
+
+  Future<void> _loadGroups() async {
+    final current = _db.auth.currentUser;
+    if (current == null) return;
+
+    final links = await _db
+        .from('conversation_participants')
+        .select('conversation_id, role')
+        .eq('user_id', current.id);
+
+    final participantRows = List<Map<String, dynamic>>.from(links);
+    final ids = participantRows.map((e) => e['conversation_id']).whereType<String>().toList();
+    final roleByConversation = {
+      for (final row in participantRows)
+        row['conversation_id'].toString(): row['role']?.toString() ?? 'member',
+    };
+
+    if (ids.isEmpty) {
+      if (!mounted) return;
+      setState(() {
+        _groups = const [];
+      });
+      return;
+    }
+
+    final rows = await _db
+        .from('conversations')
+        .select('id, title, updated_at')
+        .inFilter('id', ids)
+        .eq('is_group', true)
+        .order('updated_at', ascending: false);
+
+    final groups = List<Map<String, dynamic>>.from(rows).map((g) {
+      g['my_role'] = roleByConversation[g['id'].toString()] ?? 'member';
+      return g;
+    }).toList();
+
+    if (!mounted) return;
+    setState(() {
+      _groups = groups;
     });
   }
 
@@ -621,12 +670,124 @@ class _FriendsPageState extends State<FriendsPage> {
     );
   }
 
+  Future<void> _openGroup(Map<String, dynamic> group) async {
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatPage(
+          settings: widget.settings,
+          conversationId: group['id'].toString(),
+          peerName: (group['title'] ?? 'Группа').toString(),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _createGroup() async {
+    final me = _db.auth.currentUser;
+    if (me == null) return;
+
+    final candidatesRaw = await _db
+        .from('profiles')
+        .select('id, username, full_name')
+        .neq('id', me.id)
+        .order('full_name');
+    final candidates = List<Map<String, dynamic>>.from(candidatesRaw);
+
+    final titleCtrl = TextEditingController();
+    final selected = <String>{};
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setLocalState) {
+            return AlertDialog(
+              title: const Text('Новая группа'),
+              content: SizedBox(
+                width: 420,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: titleCtrl,
+                      decoration: const InputDecoration(labelText: 'Название группы'),
+                    ),
+                    const SizedBox(height: 8),
+                    Flexible(
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: candidates.map((u) {
+                          final uid = u['id'].toString();
+                          final checked = selected.contains(uid);
+                          return CheckboxListTile(
+                            value: checked,
+                            title: Text((u['full_name'] ?? u['username'] ?? 'User').toString()),
+                            subtitle: Text('@${u['username'] ?? 'user'}'),
+                            onChanged: (v) {
+                              setLocalState(() {
+                                if (v == true) {
+                                  selected.add(uid);
+                                } else {
+                                  selected.remove(uid);
+                                }
+                              });
+                            },
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('Отмена'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('Создать'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (ok != true) return;
+
+    final conversationId = await _db.rpc(
+      'create_group_chat',
+      params: {
+        'group_title': titleCtrl.text.trim(),
+        'member_ids': selected.toList(),
+      },
+    ) as String;
+
+    await _loadGroups();
+    if (!mounted) return;
+    final group = _groups.firstWhere(
+      (g) => g['id'].toString() == conversationId,
+      orElse: () => {
+        'id': conversationId,
+        'title': titleCtrl.text.trim().isEmpty ? 'Группа' : titleCtrl.text.trim(),
+      },
+    );
+    _openGroup(group);
+  }
+
   @override
   Widget build(BuildContext context) {
     final lang = widget.settings.lang;
     final q = _search.text.trim().toLowerCase();
-    final list = _friends.where((f) {
+    final friends = _friends.where((f) {
       final name = (f['full_name'] ?? f['username'] ?? '').toString().toLowerCase();
+      return q.isEmpty || name.contains(q);
+    }).toList();
+    final groups = _groups.where((g) {
+      final name = (g['title'] ?? '').toString().toLowerCase();
       return q.isEmpty || name.contains(q);
     }).toList();
 
@@ -634,6 +795,12 @@ class _FriendsPageState extends State<FriendsPage> {
       appBar: AppBar(
         title: Text('${tr(lang, 'app_name')} - ${tr(lang, 'friends')}'),
         actions: [
+          if (_tab == 1)
+            IconButton(
+              onPressed: _createGroup,
+              icon: const Icon(Icons.group_add_rounded),
+              tooltip: 'Создать группу',
+            ),
           IconButton(
             onPressed: () {
               Navigator.of(context).push(
@@ -664,17 +831,26 @@ class _FriendsPageState extends State<FriendsPage> {
           ),
         ),
         child: RefreshIndicator(
-          onRefresh: _loadFriends,
+          onRefresh: _loadAll,
           child: ListView(
             padding: const EdgeInsets.all(12),
             children: [
+              SegmentedButton<int>(
+                segments: const [
+                  ButtonSegment(value: 0, icon: Icon(Icons.people_alt_outlined), label: Text('Личные')),
+                  ButtonSegment(value: 1, icon: Icon(Icons.groups_rounded), label: Text('Группы')),
+                ],
+                selected: {_tab},
+                onSelectionChanged: (s) => setState(() => _tab = s.first),
+              ),
+              const SizedBox(height: 10),
               Glass(
                 settings: widget.settings,
                 child: TextField(
                   controller: _search,
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
-                    hintText: tr(lang, 'find_friend'),
+                    hintText: _tab == 0 ? tr(lang, 'find_friend') : 'Найти группу',
                     border: InputBorder.none,
                     icon: const Icon(Icons.search),
                   ),
@@ -683,35 +859,68 @@ class _FriendsPageState extends State<FriendsPage> {
               const SizedBox(height: 10),
               if (_loading)
                 const Center(child: CircularProgressIndicator())
-              else if (list.isEmpty)
-                Glass(
-                  settings: widget.settings,
-                  child: ListTile(
-                    title: Text(tr(lang, 'empty_friends')),
-                    subtitle: Text(tr(lang, 'ask_friends')),
-                  ),
-                )
+              else if (_tab == 0)
+                ...(friends.isEmpty
+                    ? [
+                        Glass(
+                          settings: widget.settings,
+                          child: ListTile(
+                            title: Text(tr(lang, 'empty_friends')),
+                            subtitle: Text(tr(lang, 'ask_friends')),
+                          ),
+                        )
+                      ]
+                    : friends.map(
+                        (friend) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Glass(
+                            settings: widget.settings,
+                            child: ListTile(
+                              onTap: () => _openChat(friend),
+                              leading: const CircleAvatar(
+                                backgroundColor: Color(0xFF28C4D9),
+                                child: Icon(Icons.person, color: Colors.white),
+                              ),
+                              title: Text((friend['full_name'] ?? friend['username'] ?? 'Friend').toString()),
+                              subtitle: Text(
+                                _presenceText(friend).isEmpty
+                                    ? '@${friend['username'] ?? 'user'}'
+                                    : _presenceText(friend),
+                              ),
+                              trailing: const Icon(Icons.chat_bubble_outline_rounded),
+                            ),
+                          ),
+                        ),
+                      ))
               else
-                ...list.map(
-                  (friend) => Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Glass(
-                      settings: widget.settings,
-                      child: ListTile(
-                        onTap: () => _openChat(friend),
-                        leading: const CircleAvatar(
-                          backgroundColor: Color(0xFF28C4D9),
-                          child: Icon(Icons.person, color: Colors.white),
+                ...(groups.isEmpty
+                    ? [
+                        Glass(
+                          settings: widget.settings,
+                          child: const ListTile(
+                            title: Text('Пока нет групп'),
+                            subtitle: Text('Создай первую группу и добавь участников.'),
+                          ),
+                        )
+                      ]
+                    : groups.map(
+                        (group) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: Glass(
+                            settings: widget.settings,
+                            child: ListTile(
+                              onTap: () => _openGroup(group),
+                              leading: const CircleAvatar(
+                                backgroundColor: Color(0xFF00B894),
+                                child: Icon(Icons.groups_2_rounded, color: Colors.white),
+                              ),
+                              title: Text((group['title'] ?? 'Группа').toString()),
+                              subtitle: Text('Роль: ${group['my_role'] ?? 'member'}'),
+                              trailing: const Icon(Icons.chat_rounded),
+                            ),
+                          ),
                         ),
-                        title: Text(
-                          (friend['full_name'] ?? friend['username'] ?? 'Friend').toString(),
-                        ),
-                        subtitle: Text(_presenceText(friend).isEmpty ? '@${friend['username'] ?? 'user'}' : _presenceText(friend)),
-                        trailing: const Icon(Icons.chat_bubble_outline_rounded),
-                      ),
-                    ),
-                  ),
-                ),
+                      )),
             ],
           ),
         ),
@@ -741,12 +950,15 @@ class _ChatPageState extends State<ChatPage> {
   final _scroll = ScrollController();
   List<Map<String, dynamic>> _messages = const [];
   RealtimeChannel? _channel;
+  bool _isGroup = false;
+  String _myRole = 'member';
 
   String get _me => _db.auth.currentUser!.id;
 
   @override
   void initState() {
     super.initState();
+    _loadConversationMeta();
     _loadMessages();
     _listenRealtime();
   }
@@ -759,10 +971,177 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
+  Future<void> _loadConversationMeta() async {
+    final convoRows = await _db
+        .from('conversations')
+        .select('is_group')
+        .eq('id', widget.conversationId)
+        .limit(1);
+
+    final partRows = await _db
+        .from('conversation_participants')
+        .select('role')
+        .eq('conversation_id', widget.conversationId)
+        .eq('user_id', _me)
+        .limit(1);
+
+    if (!mounted) return;
+    setState(() {
+      _isGroup = convoRows.isNotEmpty && convoRows.first['is_group'] == true;
+      _myRole = partRows.isEmpty ? 'member' : (partRows.first['role']?.toString() ?? 'member');
+    });
+  }
+
+  Future<void> _openGroupMembers() async {
+    if (!_isGroup) return;
+
+    final rows = await _db
+        .from('conversation_participants')
+        .select('user_id, role')
+        .eq('conversation_id', widget.conversationId)
+        .order('created_at');
+    final members = List<Map<String, dynamic>>.from(rows);
+    final ids = members.map((e) => e['user_id'].toString()).toList();
+
+    final profilesRows = ids.isEmpty
+        ? <dynamic>[]
+        : await _db
+            .from('profiles')
+            .select('id, username, full_name')
+            .inFilter('id', ids);
+    final profiles = {
+      for (final p in List<Map<String, dynamic>>.from(profilesRows)) p['id'].toString(): p,
+    };
+
+    if (!mounted) return;
+
+    Future<void> refresh() async {
+      Navigator.of(context).pop();
+      await _loadConversationMeta();
+      await _openGroupMembers();
+    }
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Участники группы', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              Flexible(
+                child: ListView(
+                  shrinkWrap: true,
+                  children: members.map((m) {
+                    final uid = m['user_id'].toString();
+                    final role = m['role']?.toString() ?? 'member';
+                    final p = profiles[uid] ?? const <String, dynamic>{};
+                    final name = (p['full_name'] ?? p['username'] ?? uid).toString();
+                    final uname = (p['username'] ?? 'user').toString();
+                    final canManage = (_myRole == 'owner' || _myRole == 'admin') && uid != _me && role != 'owner';
+                    return ListTile(
+                      title: Text(name),
+                      subtitle: Text('@$uname · $role'),
+                      trailing: canManage
+                          ? PopupMenuButton<String>(
+                              onSelected: (v) async {
+                                if (v == 'admin' || v == 'member') {
+                                  await _db.rpc(
+                                    'set_group_role',
+                                    params: {
+                                      'group_id': widget.conversationId,
+                                      'member_id': uid,
+                                      'new_role': v,
+                                    },
+                                  );
+                                  if (!mounted) return;
+                                  await refresh();
+                                }
+                                if (v == 'remove') {
+                                  await _db.rpc(
+                                    'remove_group_member',
+                                    params: {
+                                      'group_id': widget.conversationId,
+                                      'member_id': uid,
+                                    },
+                                  );
+                                  if (!mounted) return;
+                                  await refresh();
+                                }
+                              },
+                              itemBuilder: (_) => const [
+                                PopupMenuItem(value: 'admin', child: Text('Сделать админом')),
+                                PopupMenuItem(value: 'member', child: Text('Сделать участником')),
+                                PopupMenuItem(value: 'remove', child: Text('Удалить из группы')),
+                              ],
+                            )
+                          : null,
+                    );
+                  }).toList(),
+                ),
+              ),
+              if (_myRole == 'owner' || _myRole == 'admin')
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      final allUsersRaw = await _db
+                          .from('profiles')
+                          .select('id, username, full_name')
+                          .neq('id', _me)
+                          .order('full_name');
+                      final allUsers = List<Map<String, dynamic>>.from(allUsersRaw);
+                      final existing = members.map((e) => e['user_id'].toString()).toSet();
+                      final available = allUsers.where((u) => !existing.contains(u['id'].toString())).toList();
+
+                      final selected = await showDialog<String>(
+                        context: ctx,
+                        builder: (dctx) => AlertDialog(
+                          title: const Text('Добавить участника'),
+                          content: SizedBox(
+                            width: 360,
+                            child: ListView(
+                              shrinkWrap: true,
+                              children: available
+                                  .map((u) => ListTile(
+                                        title: Text((u['full_name'] ?? u['username'] ?? 'User').toString()),
+                                        subtitle: Text('@${u['username'] ?? 'user'}'),
+                                        onTap: () => Navigator.pop(dctx, u['id'].toString()),
+                                      ))
+                                  .toList(),
+                            ),
+                          ),
+                        ),
+                      );
+
+                      if (selected == null) return;
+                      await _db.from('conversation_participants').insert({
+                        'conversation_id': widget.conversationId,
+                        'user_id': selected,
+                        'role': 'member',
+                      });
+                      if (!mounted) return;
+                      await refresh();
+                    },
+                    icon: const Icon(Icons.person_add_alt_1_rounded),
+                    label: const Text('Добавить участника'),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _loadMessages() async {
     final rows = await _db
         .from('messages')
-        .select('id, body, created_at, sender_id')
+        .select('id, body, created_at, sender_id, message_type, media_url, file_name, mime_type, latitude, longitude')
         .eq('conversation_id', widget.conversationId)
         .order('created_at');
 
@@ -800,7 +1179,129 @@ class _ChatPageState extends State<ChatPage> {
       'conversation_id': widget.conversationId,
       'sender_id': _me,
       'body': text,
+      'message_type': 'text',
     });
+  }
+
+  Future<void> _sendMediaLink({
+    required String type,
+    required String title,
+    String? defaultLabel,
+  }) async {
+    final ctrl = TextEditingController();
+    final labelCtrl = TextEditingController(text: defaultLabel ?? '');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: ctrl,
+              decoration: const InputDecoration(labelText: 'URL или путь'),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: labelCtrl,
+              decoration: const InputDecoration(labelText: 'Подпись'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Отправить')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final url = ctrl.text.trim();
+    if (url.isEmpty) return;
+    await _db.from('messages').insert({
+      'conversation_id': widget.conversationId,
+      'sender_id': _me,
+      'body': labelCtrl.text.trim().isEmpty ? title : labelCtrl.text.trim(),
+      'message_type': type,
+      'media_url': url,
+      'file_name': labelCtrl.text.trim(),
+    });
+  }
+
+  Future<void> _sendLocation() async {
+    final latCtrl = TextEditingController();
+    final lonCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Отправить геолокацию'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: latCtrl, decoration: const InputDecoration(labelText: 'Широта')),
+            const SizedBox(height: 8),
+            TextField(controller: lonCtrl, decoration: const InputDecoration(labelText: 'Долгота')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Отправить')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final lat = double.tryParse(latCtrl.text.trim());
+    final lon = double.tryParse(lonCtrl.text.trim());
+    if (lat == null || lon == null) return;
+    await _db.from('messages').insert({
+      'conversation_id': widget.conversationId,
+      'sender_id': _me,
+      'body': 'Геолокация',
+      'message_type': 'location',
+      'latitude': lat,
+      'longitude': lon,
+    });
+  }
+
+  Future<void> _openAttachmentMenu() async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(leading: const Icon(Icons.emoji_emotions_outlined), title: const Text('Стикер'), onTap: () => Navigator.pop(ctx, 'sticker')),
+            ListTile(leading: const Icon(Icons.image_outlined), title: const Text('Изображение'), onTap: () => Navigator.pop(ctx, 'image')),
+            ListTile(leading: const Icon(Icons.gif_box_outlined), title: const Text('GIF'), onTap: () => Navigator.pop(ctx, 'gif')),
+            ListTile(leading: const Icon(Icons.videocam_outlined), title: const Text('Видео'), onTap: () => Navigator.pop(ctx, 'video')),
+            ListTile(leading: const Icon(Icons.attach_file_rounded), title: const Text('Файл/Документ'), onTap: () => Navigator.pop(ctx, 'file')),
+            ListTile(leading: const Icon(Icons.location_on_outlined), title: const Text('Геолокация'), onTap: () => Navigator.pop(ctx, 'location')),
+          ],
+        ),
+      ),
+    );
+
+    switch (action) {
+      case 'sticker':
+        await _sendMediaLink(type: 'sticker', title: 'Стикер', defaultLabel: 'Стикер');
+        break;
+      case 'image':
+        await _sendMediaLink(type: 'image', title: 'Изображение');
+        break;
+      case 'gif':
+        await _sendMediaLink(type: 'gif', title: 'GIF');
+        break;
+      case 'video':
+        await _sendMediaLink(type: 'video', title: 'Видео');
+        break;
+      case 'file':
+        await _sendMediaLink(type: 'file', title: 'Файл');
+        break;
+      case 'location':
+        await _sendLocation();
+        break;
+      default:
+        break;
+    }
   }
 
   Future<void> _deleteMessage(String id) async {
@@ -846,7 +1347,17 @@ class _ChatPageState extends State<ChatPage> {
   Widget build(BuildContext context) {
     final lang = widget.settings.lang;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.peerName)),
+      appBar: AppBar(
+        title: Text(widget.peerName),
+        actions: [
+          if (_isGroup)
+            IconButton(
+              onPressed: _openGroupMembers,
+              icon: const Icon(Icons.manage_accounts_rounded),
+              tooltip: 'Участники и роли',
+            ),
+        ],
+      ),
       body: Container(
         decoration: const BoxDecoration(
           gradient: LinearGradient(
@@ -880,7 +1391,19 @@ class _ChatPageState extends State<ChatPage> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(m['body'].toString()),
+                              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                Text(m['body']?.toString() ?? ''),
+                                if ((m['media_url'] ?? '').toString().isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Text((m['media_url']).toString(), style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                                  ),
+                                if (m['message_type'] == 'location' && m['latitude'] != null && m['longitude'] != null)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Text('📍 ${m['latitude']}, ${m['longitude']}', style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                                  ),
+                              ]),
                               const SizedBox(height: 4),
                               Text(
                                 isMine
@@ -906,6 +1429,10 @@ class _ChatPageState extends State<ChatPage> {
                   radius: 16,
                   child: Row(
                     children: [
+                      IconButton(
+                        onPressed: _openAttachmentMenu,
+                        icon: const Icon(Icons.add_circle_outline_rounded),
+                      ),
                       Expanded(
                         child: TextField(
                           controller: _input,
