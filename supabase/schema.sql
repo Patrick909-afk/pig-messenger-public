@@ -14,6 +14,8 @@ create table if not exists public.conversations (
   id uuid primary key default gen_random_uuid(),
   is_group boolean not null default false,
   title text,
+  description text,
+  icon_url text,
   created_by uuid not null references public.profiles(id) on delete cascade,
   updated_at timestamptz not null default now(),
   created_at timestamptz not null default now()
@@ -30,6 +32,14 @@ create table if not exists public.conversation_participants (
 alter table public.conversation_participants
   add column if not exists role text not null default 'member'
   check (role in ('owner','admin','member'));
+
+create table if not exists public.user_blocks (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  blocked_user_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (user_id, blocked_user_id),
+  check (user_id <> blocked_user_id)
+);
 
 create table if not exists public.friendships (
   user_id uuid not null references public.profiles(id) on delete cascade,
@@ -65,6 +75,8 @@ alter table public.messages
   add column if not exists meta jsonb not null default '{}'::jsonb;
 alter table public.messages
   add column if not exists edited_at timestamptz;
+alter table public.messages
+  add column if not exists reply_to_message_id uuid references public.messages(id) on delete set null;
 
 alter table public.messages drop constraint if exists messages_body_check;
 alter table public.messages add constraint messages_body_check check (
@@ -142,6 +154,34 @@ create trigger trg_touch_conversation
 after insert or update on public.messages
 for each row execute function public.touch_conversation();
 
+
+create or replace function public.enforce_message_rate_limit()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  recent_count integer;
+begin
+  select count(*) into recent_count
+  from public.messages m
+  where m.sender_id = new.sender_id
+    and m.created_at > now() - interval '10 seconds';
+
+  if recent_count >= 8 then
+    raise exception 'rate_limit_exceeded';
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_enforce_message_rate_limit on public.messages;
+create trigger trg_enforce_message_rate_limit
+before insert on public.messages
+for each row execute function public.enforce_message_rate_limit();
+
 create or replace function public.mark_message_edited_at()
 returns trigger
 language plpgsql
@@ -208,7 +248,7 @@ $$;
 
 drop function if exists public.create_group_chat(text, uuid[]);
 
-create or replace function public.create_group_chat(group_title text, member_ids text[] default null)
+create or replace function public.create_group_chat(group_title text, member_ids text[] default null, group_description text default null, group_icon_url text default null)
 returns uuid
 language plpgsql
 security definer
@@ -226,8 +266,8 @@ begin
 
   perform public.upsert_profile(me);
 
-  insert into public.conversations (is_group, title, created_by)
-  values (true, nullif(trim(group_title), ''), me)
+  insert into public.conversations (is_group, title, description, icon_url, created_by)
+  values (true, nullif(trim(group_title), ''), nullif(trim(group_description), ''), nullif(trim(group_icon_url), ''), me)
   returning id into convo;
 
   insert into public.conversation_participants (conversation_id, user_id, role)
@@ -473,10 +513,100 @@ begin
 end;
 $$;
 
+
+create or replace function public.update_group_meta(group_id uuid, p_title text default null, p_description text default null, p_icon_url text default null)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+begin
+  if me is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not public.is_conversation_admin(group_id, me) then
+    raise exception 'forbidden';
+  end if;
+
+  update public.conversations
+  set
+    title = coalesce(nullif(trim(p_title), ''), title),
+    description = coalesce(nullif(trim(p_description), ''), description),
+    icon_url = coalesce(nullif(trim(p_icon_url), ''), icon_url),
+    updated_at = now()
+  where id = group_id and is_group = true;
+end;
+$$;
+
+create or replace function public.block_user(p_user uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+begin
+  if me is null then
+    raise exception 'not authenticated';
+  end if;
+  if p_user is null or p_user = me then
+    return;
+  end if;
+
+  perform public.upsert_profile(me);
+  perform public.upsert_profile(p_user);
+
+  insert into public.user_blocks(user_id, blocked_user_id)
+  values (me, p_user)
+  on conflict do nothing;
+end;
+$$;
+
+create or replace function public.unblock_user(p_user uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+begin
+  if me is null then
+    raise exception 'not authenticated';
+  end if;
+
+  delete from public.user_blocks where user_id = me and blocked_user_id = p_user;
+end;
+$$;
+
+create or replace function public.get_blocked_users()
+returns table (
+  id uuid,
+  username text,
+  full_name text,
+  last_seen timestamptz,
+  created_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select p.id, p.username, p.full_name, p.last_seen, p.created_at
+  from public.user_blocks b
+  join public.profiles p on p.id = b.blocked_user_id
+  where b.user_id = auth.uid()
+  order by b.created_at desc;
+$$;
+
 alter table public.profiles enable row level security;
 alter table public.conversations enable row level security;
 alter table public.conversation_participants enable row level security;
 alter table public.friendships enable row level security;
+alter table public.user_blocks enable row level security;
 alter table public.messages enable row level security;
 
 create or replace function public.is_conversation_member(p_conversation_id uuid, p_user uuid default auth.uid())
@@ -603,12 +733,38 @@ on public.friendships
 for delete
 using (auth.uid() in (user_id, friend_id));
 
+
+-- user_blocks policies
+drop policy if exists "user_blocks_select_self" on public.user_blocks;
+create policy "user_blocks_select_self"
+on public.user_blocks
+for select
+using (user_id = auth.uid());
+
+drop policy if exists "user_blocks_insert_self" on public.user_blocks;
+create policy "user_blocks_insert_self"
+on public.user_blocks
+for insert
+with check (user_id = auth.uid());
+
+drop policy if exists "user_blocks_delete_self" on public.user_blocks;
+create policy "user_blocks_delete_self"
+on public.user_blocks
+for delete
+using (user_id = auth.uid());
+
 -- messages policies
 drop policy if exists "messages_select_member" on public.messages;
 create policy "messages_select_member"
 on public.messages
 for select
-using (public.is_conversation_member(messages.conversation_id));
+using (
+  public.is_conversation_member(messages.conversation_id)
+  and not exists (
+    select 1 from public.user_blocks b
+    where b.user_id = auth.uid() and b.blocked_user_id = messages.sender_id
+  )
+);
 
 drop policy if exists "messages_insert_sender_member" on public.messages;
 create policy "messages_insert_sender_member"
@@ -647,6 +803,7 @@ grant select, update on public.profiles to authenticated;
 grant select, insert on public.conversations to authenticated;
 grant select, insert, update, delete on public.conversation_participants to authenticated;
 grant select, insert, delete on public.friendships to authenticated;
+grant select, insert, delete on public.user_blocks to authenticated;
 grant select, insert, update, delete on public.messages to authenticated;
 grant execute on function public.start_dm(uuid) to authenticated;
 grant execute on function public.upsert_profile(uuid) to authenticated;
@@ -655,12 +812,17 @@ grant execute on function public.get_my_friends() to authenticated;
 grant execute on function public.get_friend_suggestions(integer) to authenticated;
 grant execute on function public.search_users(text, integer) to authenticated;
 grant execute on function public.start_self_chat() to authenticated;
-grant execute on function public.create_group_chat(text, text[]) to authenticated;
+grant execute on function public.create_group_chat(text, text[], text, text) to authenticated;
 grant execute on function public.set_group_role(uuid, uuid, text) to authenticated;
 grant execute on function public.remove_group_member(uuid, uuid) to authenticated;
 grant execute on function public.is_conversation_member(uuid, uuid) to authenticated;
 grant execute on function public.is_conversation_admin(uuid, uuid) to authenticated;
 grant execute on function public.is_group_admin(uuid, uuid) to authenticated;
+
+grant execute on function public.update_group_meta(uuid, text, text, text) to authenticated;
+grant execute on function public.block_user(uuid) to authenticated;
+grant execute on function public.unblock_user(uuid) to authenticated;
+grant execute on function public.get_blocked_users() to authenticated;
 
 
 insert into storage.buckets (id, name, public, file_size_limit)

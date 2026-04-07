@@ -1,34 +1,28 @@
 # PMessenger
 
-Flutter-мессенджер для друзей на Supabase.
+Flutter messenger on Supabase.
 
-## Что есть
-- Авторизация email/password через Supabase.
-- Личные чаты и realtime сообщения.
-- Русский интерфейс по умолчанию.
-- Переключение языка на казахский в настройках.
-- Визуальные эффекты в настройках: Liquid Glass, блюр, прозрачность.
-- Глобальный шрифт Monocraft.
-- Android minSdk 21 (Android 5.0).
+## Implemented
+- Login by username/password via internal email alias.
+- Personal chats, groups, realtime messages.
+- Reply/edit/delete messages.
+- Block and unblock users.
+- Search users and add friends by username.
+- Profile settings and notification toggles.
 
-## Основные файлы
-- `lib/main.dart`
-- `pubspec.yaml`
-- `supabase/schema.sql`
-- `assets/fonts/Monocraft.ttf`
-- `assets/icons/app_icon_round.png`
-- `.github/workflows/build-apk.yml`
+## Security notes
+Use runtime defines in production build:
+SUPABASE_URL
+SUPABASE_ANON_KEY
+CHAT_CRYPTO_SECRET
 
-## Сборка
-```bash
-flutter pub get
-flutter pub run flutter_launcher_icons
-flutter build apk --release
-```
+If defines are not passed, app uses default values from source.
 
+## Generate crypto secret
+sh scripts/gen_runtime_secrets.sh
 
-## Secrets
-Use runtime defines for keys:
-```bash
-flutter run --dart-define=SUPABASE_URL=https://tmgiciwryliplkvewlhp.supabase.co --dart-define=SUPABASE_ANON_KEY=YOUR_ANON_KEY
-```
+## Run app
+flutter run --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co --dart-define=SUPABASE_ANON_KEY=YOUR_ANON_KEY --dart-define=CHAT_CRYPTO_SECRET=YOUR_RANDOM_SECRET
+
+## Apply DB schema
+SUPABASE_PAT=YOUR_PAT SUPABASE_PROJECT_REF=YOUR_PROJECT_REF sh scripts/apply_schema.sh

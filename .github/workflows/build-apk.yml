@@ -55,6 +55,8 @@ jobs:
       - name: Build release APK
         run: |
           flutter build apk --release \
+            --dart-define=SUPABASE_URL=${{ vars.SUPABASE_URL }} \
+            --dart-define=SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }} \
             --dart-define=CHAT_CRYPTO_SECRET=${{ vars.CHAT_CRYPTO_SECRET }}
 
       - name: Publish release

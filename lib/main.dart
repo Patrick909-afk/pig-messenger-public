@@ -14,21 +14,19 @@ import 'package:cryptography/cryptography.dart';
 import 'package:mime/mime.dart';
 
 const _supabaseUrl = String.fromEnvironment(
-  'SUPABASE_URL',
-  defaultValue: 'https://tmgiciwryliplkvewlhp.supabase.co',
+  "SUPABASE_URL",
+  defaultValue: "",
 );
 const _supabaseAnonKey = String.fromEnvironment(
-  'SUPABASE_ANON_KEY',
-  defaultValue:
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM',
+  "SUPABASE_ANON_KEY",
+  defaultValue: "",
 );
 
 const _chatCryptoSecret = String.fromEnvironment(
-  'CHAT_CRYPTO_SECRET',
-  defaultValue: 'pmessenger_change_this_secret',
+  "CHAT_CRYPTO_SECRET",
+  defaultValue: "",
 );
-
-const _ru = 'ru';
+const _ru = "ru";
 const _kk = 'kk';
 
 const _i18n = <String, Map<String, String>>{
@@ -735,7 +733,7 @@ class _FriendsPageState extends State<FriendsPage> {
 
     final rows = await _db
         .from('conversations')
-        .select('id, title, updated_at')
+        .select('id, title, description, icon_url, updated_at')
         .inFilter('id', ids)
         .eq('is_group', true)
         .order('updated_at', ascending: false);
@@ -769,6 +767,104 @@ class _FriendsPageState extends State<FriendsPage> {
     );
   }
 
+
+  Future<void> _openSelfChat() async {
+    final conversationId = await _db.rpc('start_self_chat') as String;
+    if (!mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatPage(
+          settings: widget.settings,
+          conversationId: conversationId,
+          peerName: 'Избранное',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showFindUsersDialog() async {
+    final ctrl = TextEditingController();
+    List<Map<String, dynamic>> users = [];
+
+    Future<void> search(StateSetter setLocal) async {
+      final rows = await _db.rpc('search_users', params: {'p_query': ctrl.text.trim(), 'limit_count': 30});
+      users = List<Map<String, dynamic>>.from(rows);
+      setLocal(() {});
+    }
+
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text('Найти пользователя'),
+          content: SizedBox(
+            width: 420,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: ctrl,
+                  decoration: const InputDecoration(labelText: 'Ник или имя', prefixIcon: Icon(Icons.search)),
+                  onSubmitted: (_) => search(setLocal),
+                ),
+                const SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: FilledButton.icon(
+                    onPressed: () => search(setLocal),
+                    icon: const Icon(Icons.search),
+                    label: const Text('Искать'),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Flexible(
+                  child: ListView(
+                    shrinkWrap: true,
+                    children: users.map((u) {
+                      return ListTile(
+                        title: Text((u['full_name'] ?? u['username'] ?? 'User').toString()),
+                        subtitle: Text('@${u['username'] ?? 'user'}'),
+                        trailing: Wrap(
+                          spacing: 4,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.chat_bubble_outline_rounded),
+                              onPressed: () async {
+                                Navigator.pop(ctx);
+                                await _openChat(u);
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.person_add_alt_1_rounded),
+                              onPressed: () async {
+                                final username = (u['username'] ?? '').toString();
+                                if (username.isEmpty) return;
+                                try {
+                                  await _db.rpc('add_friend_by_username', params: {'p_username': username});
+                                  await _loadAll();
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Друг добавлен')));
+                                  }
+                                } catch (_) {}
+                              },
+                            ),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Закрыть')),
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _showAddFriendDialog() async {
     final usernameCtrl = TextEditingController();
@@ -834,6 +930,8 @@ class _FriendsPageState extends State<FriendsPage> {
     final candidates = List<Map<String, dynamic>>.from(candidatesRaw);
 
     final titleCtrl = TextEditingController();
+    final descriptionCtrl = TextEditingController();
+    final iconCtrl = TextEditingController();
     final selected = <String>{};
 
     final ok = await showDialog<bool>(
@@ -851,6 +949,16 @@ class _FriendsPageState extends State<FriendsPage> {
                     TextField(
                       controller: titleCtrl,
                       decoration: const InputDecoration(labelText: 'Название группы'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: descriptionCtrl,
+                      decoration: const InputDecoration(labelText: 'Описание группы'),
+                    ),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: iconCtrl,
+                      decoration: const InputDecoration(labelText: 'URL иконки (опц.)'),
                     ),
                     const SizedBox(height: 8),
                     Flexible(
@@ -902,6 +1010,8 @@ class _FriendsPageState extends State<FriendsPage> {
       params: {
         'group_title': titleCtrl.text.trim(),
         'member_ids': selected.toList(),
+        'group_description': descriptionCtrl.text.trim(),
+        'group_icon_url': iconCtrl.text.trim(),
       },
     ) as String;
 
@@ -940,6 +1050,17 @@ class _FriendsPageState extends State<FriendsPage> {
               icon: const Icon(Icons.person_add_alt_1_rounded),
               tooltip: 'Добавить друга',
             ),
+          if (_tab == 0)
+            IconButton(
+              onPressed: _showFindUsersDialog,
+              icon: const Icon(Icons.travel_explore_rounded),
+              tooltip: 'Найти пользователя',
+            ),
+          IconButton(
+            onPressed: _openSelfChat,
+            icon: const Icon(Icons.bookmark_outline_rounded),
+            tooltip: 'Избранное',
+          ),
           if (_tab == 1)
             IconButton(
               onPressed: _createGroup,
@@ -1096,12 +1217,21 @@ class _FriendsPageState extends State<FriendsPage> {
                             settings: widget.settings,
                             child: ListTile(
                               onTap: () => _openGroup(group),
-                              leading: const CircleAvatar(
-                                backgroundColor: Color(0xFF00B894),
-                                child: Icon(Icons.groups_2_rounded, color: Colors.white),
+                              leading: CircleAvatar(
+                                backgroundColor: const Color(0xFF00B894),
+                                backgroundImage: (group['icon_url'] ?? '').toString().isNotEmpty
+                                    ? NetworkImage(group['icon_url'].toString())
+                                    : null,
+                                child: (group['icon_url'] ?? '').toString().isNotEmpty
+                                    ? null
+                                    : const Icon(Icons.groups_2_rounded, color: Colors.white),
                               ),
                               title: Text((group['title'] ?? 'Группа').toString()),
-                              subtitle: Text('Роль: ${group['my_role'] ?? 'member'}'),
+                              subtitle: Text(
+                                (group['description'] ?? '').toString().isEmpty
+                                    ? 'Роль: ${group['my_role'] ?? 'member'}'
+                                    : (group['description']).toString(),
+                              ),
                               trailing: const Icon(Icons.chat_rounded),
                             ),
                           ),
@@ -1727,7 +1857,7 @@ class _ChatPageState extends State<ChatPage> {
   }
 }
 
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({
     super.key,
     required this.settings,
@@ -1738,13 +1868,147 @@ class SettingsPage extends StatelessWidget {
   final Future<void> Function(AppSettings next) onChanged;
 
   @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool _notifyEnabled = true;
+  bool _notifyPreview = true;
+  bool _notifySound = true;
+  bool _notifyVibration = true;
+
+  Future<void> _loadNotifyPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    setState(() {
+      _notifyEnabled = prefs.getBool('notify_enabled') ?? true;
+      _notifyPreview = prefs.getBool('notify_preview') ?? true;
+      _notifySound = prefs.getBool('notify_sound') ?? true;
+      _notifyVibration = prefs.getBool('notify_vibration') ?? true;
+    });
+  }
+
+  Future<void> _setNotify(String key, bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(key, value);
+    if (!mounted) return;
+    setState(() {
+      if (key == 'notify_enabled') _notifyEnabled = value;
+      if (key == 'notify_preview') _notifyPreview = value;
+      if (key == 'notify_sound') _notifySound = value;
+      if (key == 'notify_vibration') _notifyVibration = value;
+    });
+  }
+
+  Future<void> _editProfileDialog() async {
+    final me = _db.auth.currentUser;
+    if (me == null) return;
+
+    final rows = await _db.from('profiles').select('username, full_name').eq('id', me.id).limit(1);
+    final existing = rows.isEmpty ? <String, dynamic>{} : Map<String, dynamic>.from(rows.first);
+
+    final usernameCtrl = TextEditingController(text: (existing['username'] ?? '').toString());
+    final nameCtrl = TextEditingController(text: (existing['full_name'] ?? '').toString());
+
+    if (!mounted) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Профиль'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: usernameCtrl, decoration: const InputDecoration(labelText: 'Никнейм')),
+            const SizedBox(height: 8),
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Имя')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    final username = usernameCtrl.text.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.-]'), '');
+    final fullName = nameCtrl.text.trim();
+
+    if (username.length < 3) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Ник минимум 3 символа')));
+      return;
+    }
+
+    try {
+      await _db.from('profiles').update({'username': username, 'full_name': fullName.isEmpty ? username : fullName}).eq('id', me.id);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Профиль обновлен')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка профиля: $e')));
+    }
+  }
+
+  Future<void> _changePasswordDialog() async {
+    final passCtrl = TextEditingController();
+    final pass2Ctrl = TextEditingController();
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Сменить пароль'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: passCtrl, obscureText: true, decoration: const InputDecoration(labelText: 'Новый пароль')),
+            const SizedBox(height: 8),
+            TextField(controller: pass2Ctrl, obscureText: true, decoration: const InputDecoration(labelText: 'Повтори пароль')),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Обновить')),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    final p1 = passCtrl.text;
+    final p2 = pass2Ctrl.text;
+    if (p1.length < 6 || p1 != p2) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Проверь пароль (мин 6 символов и совпадение)')));
+      return;
+    }
+
+    try {
+      await _db.auth.updateUser(UserAttributes(password: p1));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пароль обновлен')));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка смены пароля: $e')));
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadNotifyPrefs();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final settings = widget.settings;
     final lang = settings.lang;
 
-    Future<void> setLang(String v) => onChanged(settings.copyWith(lang: v));
-    Future<void> setLiquid(bool v) => onChanged(settings.copyWith(liquidGlass: v));
-    Future<void> setBlur(bool v) => onChanged(settings.copyWith(blur: v));
-    Future<void> setTransparency(bool v) => onChanged(settings.copyWith(transparency: v));
+    Future<void> setLang(String v) => widget.onChanged(settings.copyWith(lang: v));
+    Future<void> setLiquid(bool v) => widget.onChanged(settings.copyWith(liquidGlass: v));
+    Future<void> setBlur(bool v) => widget.onChanged(settings.copyWith(blur: v));
+    Future<void> setTransparency(bool v) => widget.onChanged(settings.copyWith(transparency: v));
 
     return Scaffold(
       appBar: AppBar(title: Text(tr(lang, 'settings'))),
@@ -1802,6 +2066,56 @@ class SettingsPage extends StatelessWidget {
                     onChanged: (v) => setTransparency(v),
                     title: Text(tr(lang, 'transparency')),
                     subtitle: Text(tr(lang, 'transparency_desc')),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Glass(
+              settings: settings,
+              child: Column(
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.badge_outlined),
+                    title: const Text('Профиль'),
+                    subtitle: const Text('Никнейм и имя'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _editProfileDialog,
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.lock_outline),
+                    title: const Text('Пароль'),
+                    subtitle: const Text('Сменить пароль аккаунта'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: _changePasswordDialog,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Glass(
+              settings: settings,
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    value: _notifyEnabled,
+                    onChanged: (v) => _setNotify('notify_enabled', v),
+                    title: const Text('Уведомления'),
+                  ),
+                  SwitchListTile(
+                    value: _notifyPreview,
+                    onChanged: _notifyEnabled ? (v) => _setNotify('notify_preview', v) : null,
+                    title: const Text('Показывать текст в уведомлениях'),
+                  ),
+                  SwitchListTile(
+                    value: _notifySound,
+                    onChanged: _notifyEnabled ? (v) => _setNotify('notify_sound', v) : null,
+                    title: const Text('Звук уведомлений'),
+                  ),
+                  SwitchListTile(
+                    value: _notifyVibration,
+                    onChanged: _notifyEnabled ? (v) => _setNotify('notify_vibration', v) : null,
+                    title: const Text('Вибрация'),
                   ),
                 ],
               ),
