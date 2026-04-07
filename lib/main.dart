@@ -24,12 +24,12 @@ const _i18n = <String, Map<String, String>>{
     _kk: 'PMessenger',
   },
   'subtitle': {
-    _ru: 'мессенджер для друзей',
+    _ru: 'мессенджер для одноклассников',
     _kk: 'достарга арналған мессенджер',
   },
   'email': {
-    _ru: 'Почта',
-    _kk: 'Пошта',
+    _ru: 'Логин',
+    _kk: 'Логин',
   },
   'password': {
     _ru: 'Пароль',
@@ -124,7 +124,7 @@ const _i18n = <String, Map<String, String>>{
     _kk: 'Шығу',
   },
   'auth_created': {
-    _ru: 'Аккаунт создан. Проверь почту, если включено подтверждение.',
+    _ru: 'Аккаунт создан. Теперь заходи по логину и паролю.',
     _kk: 'Аккаунт ашылды. Растау қосулы болса, поштаны тексер.',
   },
   'dns_help': {
@@ -342,25 +342,40 @@ class AuthPage extends StatefulWidget {
 }
 
 class _AuthPageState extends State<AuthPage> {
-  final _email = TextEditingController();
+  final _login = TextEditingController();
   final _password = TextEditingController();
   final _name = TextEditingController();
   bool _isLogin = true;
   bool _busy = false;
 
+  String _toAuthEmail(String login) {
+    final normalized = login.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.-]'), '');
+    return '$normalized@pmessenger.local';
+  }
+
   Future<void> _submit() async {
+    final loginRaw = _login.text.trim();
+    if (loginRaw.length < 3) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Логин должен быть минимум 3 символа')),
+      );
+      return;
+    }
+
     setState(() => _busy = true);
     try {
       if (_isLogin) {
         await _db.auth.signInWithPassword(
-          email: _email.text.trim(),
+          email: _toAuthEmail(_login.text),
           password: _password.text,
         );
       } else {
         await _db.auth.signUp(
-          email: _email.text.trim(),
+          email: _toAuthEmail(_login.text),
           password: _password.text,
-          data: {'full_name': _name.text.trim()},
+          data: {
+            'full_name': _name.text.trim().isEmpty ? _login.text.trim() : _name.text.trim(),
+          },
         );
         if (!mounted) return;
         ScaffoldMessenger.of(context)
@@ -414,8 +429,7 @@ class _AuthPageState extends State<AuthPage> {
                       ),
                     if (!_isLogin) const SizedBox(height: 10),
                     TextField(
-                      controller: _email,
-                      keyboardType: TextInputType.emailAddress,
+                      controller: _login,
                       decoration: InputDecoration(labelText: tr(lang, 'email')),
                     ),
                     const SizedBox(height: 10),
