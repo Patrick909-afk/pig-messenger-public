@@ -1,0 +1,32 @@
+name: pig_messenger
+description: PIG MESSENGER - Flutter messenger for friends with Supabase backend.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  supabase_flutter: ^2.6.0
+  timeago: ^3.7.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icons/
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/icons/app_icon_round.png
+  adaptive_icon_background: "#10151A"
+  adaptive_icon_foreground: assets/icons/app_icon_round.png
