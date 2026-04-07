@@ -866,15 +866,18 @@ class _ChatPageState extends State<ChatPage> {
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                           radius: 16,
                           child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(m['body'].toString()),
-                            const SizedBox(height: 4),
-                            Text(
-                              isMine ? '✓ ${timeago.format(ts, locale: 'en_short')}' : timeago.format(ts, locale: 'en_short'),
-                              style: const TextStyle(fontSize: 11, color: Colors.white70),
-                            ),
-                          ],
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(m['body'].toString()),
+                              const SizedBox(height: 4),
+                              Text(
+                                isMine
+                                    ? '✓ ${timeago.format(ts, locale: 'en_short')}'
+                                    : timeago.format(ts, locale: 'en_short'),
+                                style: const TextStyle(fontSize: 11, color: Colors.white70),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
