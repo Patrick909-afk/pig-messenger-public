@@ -4,8 +4,8 @@ Flutter messenger on Supabase.
 
 ## Implemented
 - Login by username/password via internal email alias.
-- Personal chats, groups, realtime messages.
-- Reply/edit/delete messages.
+- Chat list, personal chats, groups, realtime messages.
+- Reply/edit/delete messages with group admin rules.
 - Block and unblock users.
 - Search users and add friends by username.
 - Profile settings and notification toggles.
@@ -16,7 +16,7 @@ SUPABASE_URL
 SUPABASE_ANON_KEY
 CHAT_CRYPTO_SECRET
 
-If defines are not passed, app uses default values from source.
+If defines are missing, the app shows a config screen and does not connect.
 
 ## Generate crypto secret
 sh scripts/gen_runtime_secrets.sh

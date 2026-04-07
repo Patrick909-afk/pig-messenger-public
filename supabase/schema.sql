@@ -602,6 +602,84 @@ as $$
   order by b.created_at desc;
 $$;
 
+create or replace function public.mark_conversation_read(p_conversation_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'not authenticated';
+  end if;
+
+  update public.conversation_participants
+  set last_read_at = now()
+  where conversation_id = p_conversation_id
+    and user_id = auth.uid();
+end;
+$$;
+
+create or replace function public.get_my_chats()
+returns table (
+  conversation_id uuid,
+  is_group boolean,
+  title text,
+  description text,
+  icon_url text,
+  updated_at timestamptz,
+  peer_id uuid,
+  peer_username text,
+  peer_full_name text,
+  last_message_body text,
+  last_message_type text,
+  last_message_at timestamptz,
+  last_message_sender uuid
+)
+language sql
+security definer
+set search_path = public
+as $$
+  with my_convos as (
+    select c.*
+    from public.conversations c
+    join public.conversation_participants cp on cp.conversation_id = c.id
+    where cp.user_id = auth.uid()
+  ),
+  last_messages as (
+    select distinct on (m.conversation_id)
+      m.conversation_id, m.body, m.message_type, m.created_at, m.sender_id
+    from public.messages m
+    join my_convos c on c.id = m.conversation_id
+    order by m.conversation_id, m.created_at desc
+  ),
+  peers as (
+    select cp.conversation_id, p.id as peer_id, p.username, p.full_name
+    from public.conversation_participants cp
+    join public.profiles p on p.id = cp.user_id
+    join my_convos c on c.id = cp.conversation_id
+    where c.is_group = false and cp.user_id <> auth.uid()
+  )
+  select
+    c.id as conversation_id,
+    c.is_group,
+    c.title,
+    c.description,
+    c.icon_url,
+    c.updated_at,
+    pr.peer_id,
+    pr.username as peer_username,
+    pr.full_name as peer_full_name,
+    lm.body as last_message_body,
+    coalesce(lm.message_type, 'text') as last_message_type,
+    lm.created_at as last_message_at,
+    lm.sender_id as last_message_sender
+  from my_convos c
+  left join peers pr on pr.conversation_id = c.id
+  left join last_messages lm on lm.conversation_id = c.id
+  order by coalesce(lm.created_at, c.updated_at) desc;
+$$;
+
 alter table public.profiles enable row level security;
 alter table public.conversations enable row level security;
 alter table public.conversation_participants enable row level security;
@@ -823,6 +901,9 @@ grant execute on function public.update_group_meta(uuid, text, text, text) to au
 grant execute on function public.block_user(uuid) to authenticated;
 grant execute on function public.unblock_user(uuid) to authenticated;
 grant execute on function public.get_blocked_users() to authenticated;
+
+grant execute on function public.mark_conversation_read(uuid) to authenticated;
+grant execute on function public.get_my_chats() to authenticated;
 
 
 insert into storage.buckets (id, name, public, file_size_limit)

@@ -13,20 +13,9 @@ import 'package:timeago/timeago.dart' as timeago;
 import 'package:cryptography/cryptography.dart';
 import 'package:mime/mime.dart';
 
-const _supabaseUrl = String.fromEnvironment(
-  "SUPABASE_URL",
-  defaultValue: "https://tmgiciwryliplkvewlhp.supabase.co",
-);
-const _supabaseAnonKey = String.fromEnvironment(
-  "SUPABASE_ANON_KEY",
-  defaultValue:
-      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM",
-);
-
-const _chatCryptoSecret = String.fromEnvironment(
-  "CHAT_CRYPTO_SECRET",
-  defaultValue: "pmessenger_change_this_secret",
-);
+const _supabaseUrl = String.fromEnvironment("SUPABASE_URL", defaultValue: "");
+const _supabaseAnonKey = String.fromEnvironment("SUPABASE_ANON_KEY", defaultValue: "");
+const _chatCryptoSecret = String.fromEnvironment("CHAT_CRYPTO_SECRET", defaultValue: "");
 const _ru = "ru";
 const _kk = 'kk';
 
@@ -176,12 +165,72 @@ const _i18n = <String, Map<String, String>>{
 
 String tr(String lang, String key) => _i18n[key]?[lang] ?? key;
 
+bool get _hasConfig => _supabaseUrl.trim().isNotEmpty && _supabaseAnonKey.trim().isNotEmpty;
+String get _runtimeCryptoSecret => _chatCryptoSecret.trim().isNotEmpty
+    ? _chatCryptoSecret.trim()
+    : _supabaseAnonKey.trim();
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (!_hasConfig) {
+    runApp(const ConfigErrorApp());
+    return;
+  }
   await Supabase.initialize(url: _supabaseUrl, anonKey: _supabaseAnonKey);
   final prefs = await SharedPreferences.getInstance();
   final settings = AppSettings.load(prefs);
   runApp(PMessengerApp(settings: settings, prefs: prefs));
+}
+
+class ConfigErrorApp extends StatelessWidget {
+  const ConfigErrorApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData(brightness: Brightness.dark, useMaterial3: true),
+      home: const ConfigErrorPage(),
+    );
+  }
+}
+
+class ConfigErrorPage extends StatelessWidget {
+  const ConfigErrorPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF070A12), Color(0xFF12263F)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: const Center(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: 520),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Нет конфигурации Supabase', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700)),
+                SizedBox(height: 10),
+                Text('Перед запуском задай переменные окружения: SUPABASE_URL, SUPABASE_ANON_KEY, CHAT_CRYPTO_SECRET.'),
+                SizedBox(height: 10),
+                Text('Пример запуска:', style: TextStyle(fontWeight: FontWeight.w600)),
+                SizedBox(height: 6),
+                Text('flutter run --dart-define=SUPABASE_URL=... --dart-define=SUPABASE_ANON_KEY=... --dart-define=CHAT_CRYPTO_SECRET=...'),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 SupabaseClient get _db => Supabase.instance.client;
@@ -516,6 +565,10 @@ class _AuthPageState extends State<AuthPage> {
       String message = text;
       if (lower.contains('over_email_send_rate_limit') || lower.contains('statuscode: 429')) {
         message = tr(widget.settings.lang, 'over_rate');
+      } else if (lower.contains('email not confirmed') || lower.contains('email_not_confirmed')) {
+        message = 'Подтверди email в Supabase или отключи email-confirmation в настройках Auth.';
+      } else if (lower.contains('invalid login credentials')) {
+        message = 'Неверный логин или пароль.';
       } else if (text.contains('Failed host lookup')) {
         message = '${text}\n${tr(widget.settings.lang, 'dns_help')}';
       }
@@ -645,11 +698,13 @@ class FriendsPage extends StatefulWidget {
 
 class _FriendsPageState extends State<FriendsPage> {
   final _search = TextEditingController();
+  final _crypto = MessageCrypto(_runtimeCryptoSecret);
+  List<Map<String, dynamic>> _chats = const [];
   List<Map<String, dynamic>> _friends = const [];
   List<Map<String, dynamic>> _suggested = const [];
   List<Map<String, dynamic>> _groups = const [];
   bool _loading = true;
-  int _tab = 0; // 0 friends, 1 groups
+  int _tab = 0; // 0 chats, 1 friends, 2 groups
 
   @override
   void initState() {
@@ -680,7 +735,7 @@ class _FriendsPageState extends State<FriendsPage> {
 
   Future<void> _loadAll() async {
     try {
-      await Future.wait([_loadFriends(), _loadGroups(), _loadSuggested()]);
+      await Future.wait([_loadChats(), _loadFriends(), _loadGroups(), _loadSuggested()]);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -691,6 +746,183 @@ class _FriendsPageState extends State<FriendsPage> {
       if (!mounted) return;
       setState(() => _loading = false);
     }
+  }
+
+  String _formatTime(DateTime dt) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+  }
+
+  Future<String> _previewText(Map<String, dynamic> chat) async {
+    final body = (chat['last_message_body'] ?? '').toString();
+    final type = (chat['last_message_type'] ?? 'text').toString();
+    if (body.isEmpty && type == 'text') return '';
+    if (type == 'image') return '📷 Изображение';
+    if (type == 'gif') return 'GIF';
+    if (type == 'video') return '🎬 Видео';
+    if (type == 'file') return '📎 Файл';
+    if (type == 'sticker') return '😊 Стикер';
+    if (type == 'location') return '📍 Геолокация';
+    return _crypto.decryptText(body, conversationId: chat['conversation_id'].toString());
+  }
+
+  Future<void> _loadChats() async {
+    final current = _db.auth.currentUser;
+    if (current == null) return;
+
+    try {
+      final rows = await _db.rpc('get_my_chats');
+      if (!mounted) return;
+      setState(() {
+        _chats = List<Map<String, dynamic>>.from(rows);
+      });
+      return;
+    } catch (_) {
+      // fallback below
+    }
+
+    try {
+      final links = await _db
+          .from('conversation_participants')
+          .select('conversation_id')
+          .eq('user_id', current.id);
+
+      final ids = List<Map<String, dynamic>>.from(links)
+          .map((e) => e['conversation_id'].toString())
+          .toSet()
+          .toList();
+
+      if (ids.isEmpty) {
+        if (!mounted) return;
+        setState(() => _chats = const []);
+        return;
+      }
+
+      final convoRows = await _db
+          .from('conversations')
+          .select('id, is_group, title, description, icon_url, updated_at')
+          .inFilter('id', ids)
+          .order('updated_at', ascending: false);
+
+      final messageRows = await _db
+          .from('messages')
+          .select('id, conversation_id, body, created_at, sender_id, message_type')
+          .inFilter('conversation_id', ids)
+          .order('created_at', ascending: false)
+          .limit(200);
+
+      final lastByConversation = <String, Map<String, dynamic>>{};
+      for (final row in List<Map<String, dynamic>>.from(messageRows)) {
+        final cid = row['conversation_id'].toString();
+        lastByConversation.putIfAbsent(cid, () => row);
+      }
+
+      final participantRows = await _db
+          .from('conversation_participants')
+          .select('conversation_id, user_id')
+          .inFilter('conversation_id', ids);
+
+      final participantsByConversation = <String, List<String>>{};
+      for (final row in List<Map<String, dynamic>>.from(participantRows)) {
+        final cid = row['conversation_id'].toString();
+        final uid = row['user_id'].toString();
+        participantsByConversation.putIfAbsent(cid, () => []).add(uid);
+      }
+
+      final peerIds = <String>{};
+      for (final c in List<Map<String, dynamic>>.from(convoRows)) {
+        if (c['is_group'] == true) continue;
+        final users = participantsByConversation[c['id'].toString()] ?? const [];
+        for (final uid in users) {
+          if (uid != current.id) peerIds.add(uid);
+        }
+      }
+
+      final profilesRows = peerIds.isEmpty
+          ? <dynamic>[]
+          : await _db
+              .from('profiles')
+              .select('id, username, full_name, avatar_url')
+              .inFilter('id', peerIds.toList());
+      final profiles = {
+        for (final p in List<Map<String, dynamic>>.from(profilesRows)) p['id'].toString(): p,
+      };
+
+      final chats = <Map<String, dynamic>>[];
+      for (final c in List<Map<String, dynamic>>.from(convoRows)) {
+        final cid = c['id'].toString();
+        final isGroup = c['is_group'] == true;
+        final users = participantsByConversation[cid] ?? const [];
+        String? peerId;
+        if (!isGroup) {
+          for (final uid in users) {
+            if (uid != current.id) {
+              peerId = uid;
+              break;
+            }
+          }
+        }
+        final peer = peerId == null ? const <String, dynamic>{} : (profiles[peerId] ?? const <String, dynamic>{});
+        final last = lastByConversation[cid] ?? const <String, dynamic>{};
+        chats.add({
+          'conversation_id': cid,
+          'is_group': isGroup,
+          'title': c['title'],
+          'description': c['description'],
+          'icon_url': c['icon_url'],
+          'peer_id': peerId,
+          'peer_username': peer['username'],
+          'peer_full_name': peer['full_name'],
+          'last_message_body': last['body'],
+          'last_message_type': last['message_type'] ?? 'text',
+          'last_message_at': last['created_at'] ?? c['updated_at'],
+          'last_message_sender': last['sender_id'],
+        });
+      }
+
+      chats.sort((a, b) {
+        final at = DateTime.tryParse((a['last_message_at'] ?? '').toString()) ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final bt = DateTime.tryParse((b['last_message_at'] ?? '').toString()) ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return bt.compareTo(at);
+      });
+
+      if (!mounted) return;
+      setState(() => _chats = chats);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _chats = const []);
+    }
+  }
+
+  Future<void> _openConversationFromChat(Map<String, dynamic> chat) async {
+    final isGroup = chat['is_group'] == true;
+    final name = isGroup
+        ? (chat['title'] ?? 'Группа').toString()
+        : (chat['peer_full_name'] ?? chat['peer_username'] ?? 'Пользователь').toString();
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ChatPage(
+          settings: widget.settings,
+          conversationId: chat['conversation_id'].toString(),
+          peerName: name,
+        ),
+      ),
+    );
+    if (mounted) {
+      await _loadAll();
+    }
+  }
+
+  Future<void> _leaveConversation(String conversationId) async {
+    final current = _db.auth.currentUser;
+    if (current == null) return;
+    await _db
+        .from('conversation_participants')
+        .delete()
+        .eq('conversation_id', conversationId)
+        .eq('user_id', current.id);
+    await _loadAll();
   }
 
   Future<void> _loadFriends() async {
@@ -798,7 +1030,7 @@ class _FriendsPageState extends State<FriendsPage> {
       ) as String;
 
       if (!mounted) return;
-      Navigator.of(context).push(
+      await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => ChatPage(
             settings: widget.settings,
@@ -807,6 +1039,9 @@ class _FriendsPageState extends State<FriendsPage> {
           ),
         ),
       );
+      if (mounted) {
+        await _loadAll();
+      }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -819,7 +1054,7 @@ class _FriendsPageState extends State<FriendsPage> {
   Future<void> _openSelfChat() async {
     final conversationId = await _db.rpc('start_self_chat') as String;
     if (!mounted) return;
-    Navigator.of(context).push(
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ChatPage(
           settings: widget.settings,
@@ -828,6 +1063,9 @@ class _FriendsPageState extends State<FriendsPage> {
         ),
       ),
     );
+    if (mounted) {
+      await _loadAll();
+    }
   }
 
   Future<void> _showFindUsersDialog() async {
@@ -955,7 +1193,7 @@ class _FriendsPageState extends State<FriendsPage> {
 
   Future<void> _openGroup(Map<String, dynamic> group) async {
     if (!mounted) return;
-    Navigator.of(context).push(
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ChatPage(
           settings: widget.settings,
@@ -964,6 +1202,9 @@ class _FriendsPageState extends State<FriendsPage> {
         ),
       ),
     );
+    if (mounted) {
+      await _loadAll();
+    }
   }
 
   Future<void> _createGroup() async {
@@ -1104,17 +1345,31 @@ class _FriendsPageState extends State<FriendsPage> {
       return q.isEmpty || name.contains(q);
     }).toList();
 
+    final chats = _chats.where((c) {
+      final isGroup = c['is_group'] == true;
+      final name = isGroup
+          ? (c['title'] ?? '').toString().toLowerCase()
+          : (c['peer_full_name'] ?? c['peer_username'] ?? '').toString().toLowerCase();
+      return q.isEmpty || name.contains(q);
+    }).toList();
+
     return Scaffold(
       appBar: AppBar(
-        title: Text('${tr(lang, 'app_name')} - ${tr(lang, 'friends')}'),
+        title: Text(
+          _tab == 0
+              ? '${tr(lang, 'app_name')} - Чаты'
+              : _tab == 1
+                  ? '${tr(lang, 'app_name')} - ${tr(lang, 'friends')}'
+                  : '${tr(lang, 'app_name')} - Группы',
+        ),
         actions: [
-          if (_tab == 0)
+          if (_tab == 1)
             IconButton(
               onPressed: _showAddFriendDialog,
               icon: const Icon(Icons.person_add_alt_1_rounded),
               tooltip: 'Добавить друга',
             ),
-          if (_tab == 0)
+          if (_tab == 1)
             IconButton(
               onPressed: _showFindUsersDialog,
               icon: const Icon(Icons.travel_explore_rounded),
@@ -1125,7 +1380,7 @@ class _FriendsPageState extends State<FriendsPage> {
             icon: const Icon(Icons.bookmark_outline_rounded),
             tooltip: 'Избранное',
           ),
-          if (_tab == 1)
+          if (_tab == 2)
             IconButton(
               onPressed: _createGroup,
               icon: const Icon(Icons.group_add_rounded),
@@ -1167,8 +1422,9 @@ class _FriendsPageState extends State<FriendsPage> {
             children: [
               SegmentedButton<int>(
                 segments: const [
-                  ButtonSegment(value: 0, icon: Icon(Icons.people_alt_outlined), label: Text('Личные')),
-                  ButtonSegment(value: 1, icon: Icon(Icons.groups_rounded), label: Text('Группы')),
+                  ButtonSegment(value: 0, icon: Icon(Icons.chat_bubble_outline_rounded), label: Text('Чаты')),
+                  ButtonSegment(value: 1, icon: Icon(Icons.people_alt_outlined), label: Text('Друзья')),
+                  ButtonSegment(value: 2, icon: Icon(Icons.groups_rounded), label: Text('Группы')),
                 ],
                 selected: {_tab},
                 onSelectionChanged: (s) => setState(() => _tab = s.first),
@@ -1180,7 +1436,11 @@ class _FriendsPageState extends State<FriendsPage> {
                   controller: _search,
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
-                    hintText: _tab == 0 ? tr(lang, 'find_friend') : 'Найти группу',
+                    hintText: _tab == 0
+                        ? 'Найти чат'
+                        : _tab == 1
+                            ? tr(lang, 'find_friend')
+                            : 'Найти группу',
                     border: InputBorder.none,
                     icon: const Icon(Icons.search),
                   ),
@@ -1190,6 +1450,81 @@ class _FriendsPageState extends State<FriendsPage> {
               if (_loading)
                 const Center(child: CircularProgressIndicator())
               else if (_tab == 0)
+                ...[
+                  ...(chats.isEmpty
+                      ? [
+                          Glass(
+                            settings: widget.settings,
+                            child: const ListTile(
+                              title: Text('Пока нет чатов'),
+                              subtitle: Text('Начни общение через поиск пользователей.'),
+                            ),
+                          )
+                        ]
+                      : chats.map(
+                          (chat) => Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Glass(
+                              settings: widget.settings,
+                              child: ListTile(
+                                onTap: () => _openConversationFromChat(chat),
+                                leading: CircleAvatar(
+                                  backgroundColor: chat['is_group'] == true ? const Color(0xFF00B894) : const Color(0xFF28C4D9),
+                                  backgroundImage: (chat['icon_url'] ?? '').toString().isNotEmpty
+                                      ? NetworkImage(chat['icon_url'].toString())
+                                      : null,
+                                  child: (chat['icon_url'] ?? '').toString().isNotEmpty
+                                      ? null
+                                      : Icon(
+                                          chat['is_group'] == true ? Icons.groups_2_rounded : Icons.person,
+                                          color: Colors.white,
+                                        ),
+                                ),
+                                title: Text(
+                                  chat['is_group'] == true
+                                      ? (chat['title'] ?? 'Группа').toString()
+                                      : (chat['peer_full_name'] ?? chat['peer_username'] ?? 'Пользователь').toString(),
+                                ),
+                                subtitle: FutureBuilder<String>(
+                                  future: _previewText(chat),
+                                  builder: (context, snapshot) {
+                                    final text = snapshot.data ?? '';
+                                    return Text(text.isEmpty ? ' ' : text, maxLines: 1, overflow: TextOverflow.ellipsis);
+                                  },
+                                ),
+                                trailing: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  crossAxisAlignment: CrossAxisAlignment.end,
+                                  children: [
+                                    Text(
+                                      () {
+                                        final raw = (chat['last_message_at'] ?? '').toString();
+                                        final dt = DateTime.tryParse(raw);
+                                        return dt == null ? '' : _formatTime(dt.toLocal());
+                                      }(),
+                                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                                    ),
+                                    PopupMenuButton<String>(
+                                      onSelected: (v) async {
+                                        if (v == 'leave') {
+                                          await _leaveConversation(chat['conversation_id'].toString());
+                                        }
+                                      },
+                                      itemBuilder: (_) => [
+                                        PopupMenuItem(
+                                          value: 'leave',
+                                          child: Text(chat['is_group'] == true ? 'Покинуть группу' : 'Удалить чат'),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                        )),
+                ]
+              else if (_tab == 1)
                 ...[
                   ...(friends.isEmpty
                       ? [
@@ -1327,12 +1662,17 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final _input = TextEditingController();
-  final _crypto = MessageCrypto(_chatCryptoSecret);
+  final _crypto = MessageCrypto(_runtimeCryptoSecret);
   final _scroll = ScrollController();
   List<Map<String, dynamic>> _messages = const [];
+  Map<String, Map<String, dynamic>> _messageById = const {};
+  Map<String, dynamic>? _replyTo;
   RealtimeChannel? _channel;
   bool _isGroup = false;
   String _myRole = 'member';
+  String? _otherUserId;
+  DateTime? _otherLastReadAt;
+  bool _isBlocked = false;
 
   String get _me => _db.auth.currentUser!.id;
 
@@ -1343,6 +1683,59 @@ class _ChatPageState extends State<ChatPage> {
 
   Future<String> _encryptBody(String plainText) async {
     return _crypto.encryptText(plainText, conversationId: widget.conversationId);
+  }
+
+  String _formatMessageTime(DateTime dt) {
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${dt.year}-${two(dt.month)}-${two(dt.day)} ${two(dt.hour)}:${two(dt.minute)}';
+  }
+
+  Future<void> _markRead() async {
+    try {
+      await _db.rpc('mark_conversation_read', params: {'p_conversation_id': widget.conversationId});
+    } catch (_) {}
+  }
+
+  void _setReplyTo(Map<String, dynamic> message) {
+    setState(() => _replyTo = message);
+  }
+
+  void _clearReply() {
+    setState(() => _replyTo = null);
+  }
+
+  Future<String> _replyPreviewText(Map<String, dynamic> msg) async {
+    final type = (msg['message_type'] ?? 'text').toString();
+    if (type == 'image') return '📷 Изображение';
+    if (type == 'gif') return 'GIF';
+    if (type == 'video') return '🎬 Видео';
+    if (type == 'file') return '📎 Файл';
+    if (type == 'sticker') return '😊 Стикер';
+    if (type == 'location') return '📍 Геолокация';
+    return _decryptBody(msg['body']);
+  }
+
+  Future<void> _toggleBlock() async {
+    final target = _otherUserId;
+    if (target == null) return;
+    try {
+      if (_isBlocked) {
+        await _db.rpc('unblock_user', params: {'p_user': target});
+      } else {
+        await _db.rpc('block_user', params: {'p_user': target});
+      }
+    } catch (_) {}
+    await _loadConversationMeta();
+  }
+
+  Future<void> _leaveConversation() async {
+    await _db
+        .from('conversation_participants')
+        .delete()
+        .eq('conversation_id', widget.conversationId)
+        .eq('user_id', _me);
+    if (!mounted) return;
+    Navigator.of(context).pop();
   }
 
   @override
@@ -1370,15 +1763,48 @@ class _ChatPageState extends State<ChatPage> {
 
     final partRows = await _db
         .from('conversation_participants')
-        .select('role')
-        .eq('conversation_id', widget.conversationId)
-        .eq('user_id', _me)
-        .limit(1);
+        .select('user_id, role, last_read_at')
+        .eq('conversation_id', widget.conversationId);
+
+    String myRole = 'member';
+    String? otherId;
+    DateTime? otherReadAt;
+    for (final row in List<Map<String, dynamic>>.from(partRows)) {
+      final uid = row['user_id']?.toString();
+      if (uid == null) continue;
+      if (uid == _me) {
+        myRole = row['role']?.toString() ?? 'member';
+      } else {
+        otherId = uid;
+        final raw = row['last_read_at'];
+        if (raw != null) {
+          otherReadAt = DateTime.tryParse(raw.toString());
+        }
+      }
+    }
+
+    bool blocked = false;
+    if (otherId != null) {
+      try {
+        final blockedRows = await _db
+            .from('user_blocks')
+            .select('blocked_user_id')
+            .eq('user_id', _me)
+            .eq('blocked_user_id', otherId)
+            .limit(1);
+        blocked = blockedRows.isNotEmpty;
+      } catch (_) {
+        blocked = false;
+      }
+    }
 
     if (!mounted) return;
     setState(() {
       _isGroup = convoRows.isNotEmpty && convoRows.first['is_group'] == true;
-      _myRole = partRows.isEmpty ? 'member' : (partRows.first['role']?.toString() ?? 'member');
+      _myRole = myRole;
+      _otherUserId = otherId;
+      _otherLastReadAt = otherReadAt;
+      _isBlocked = blocked;
     });
   }
 
@@ -1532,17 +1958,23 @@ class _ChatPageState extends State<ChatPage> {
     try {
       final rows = await _db
           .from('messages')
-          .select('id, body, created_at, edited_at, sender_id, message_type, media_url, file_name, mime_type, latitude, longitude')
+          .select('id, body, created_at, edited_at, sender_id, message_type, media_url, file_name, mime_type, latitude, longitude, reply_to_message_id')
           .eq('conversation_id', widget.conversationId)
           .order('created_at');
 
       if (!mounted) return;
-      setState(() => _messages = List<Map<String, dynamic>>.from(rows));
+      final list = List<Map<String, dynamic>>.from(rows);
+      final byId = {for (final m in list) m['id'].toString(): m};
+      setState(() {
+        _messages = list;
+        _messageById = byId;
+      });
 
       await Future<void>.delayed(const Duration(milliseconds: 16));
       if (_scroll.hasClients) {
         _scroll.jumpTo(_scroll.position.maxScrollExtent);
       }
+      await _markRead();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1563,7 +1995,10 @@ class _ChatPageState extends State<ChatPage> {
             column: 'conversation_id',
             value: widget.conversationId,
           ),
-          callback: (_) => _loadMessages(),
+          callback: (_) async {
+            await _loadMessages();
+            await _loadConversationMeta();
+          },
         )
         .subscribe();
   }
@@ -1571,6 +2006,13 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _send() async {
     final text = _input.text.trim();
     if (text.isEmpty) return;
+    if (_isBlocked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Вы заблокировали пользователя. Разблокируйте, чтобы писать.')),
+      );
+      return;
+    }
     _input.clear();
 
     try {
@@ -1580,7 +2022,9 @@ class _ChatPageState extends State<ChatPage> {
         'sender_id': _me,
         'body': encryptedBody,
         'message_type': 'text',
+        if (_replyTo != null) 'reply_to_message_id': _replyTo!['id'],
       });
+      _clearReply();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1590,6 +2034,13 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _pickAndSendAttachment(String type) async {
+    if (_isBlocked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Вы заблокировали пользователя. Разблокируйте, чтобы писать.')),
+      );
+      return;
+    }
     FileType pickerType = FileType.any;
     if (type == 'image' || type == 'gif' || type == 'sticker') {
       pickerType = FileType.image;
@@ -1637,7 +2088,9 @@ class _ChatPageState extends State<ChatPage> {
         'media_url': url,
         'file_name': picked.name,
         'mime_type': inferredMime,
+        if (_replyTo != null) 'reply_to_message_id': _replyTo!['id'],
       });
+      _clearReply();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -1647,6 +2100,13 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _sendLocation() async {
+    if (_isBlocked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Вы заблокировали пользователя. Разблокируйте, чтобы писать.')),
+      );
+      return;
+    }
     final latCtrl = TextEditingController();
     final lonCtrl = TextEditingController();
     final ok = await showDialog<bool>(
@@ -1678,7 +2138,9 @@ class _ChatPageState extends State<ChatPage> {
       'message_type': 'location',
       'latitude': lat,
       'longitude': lon,
+      if (_replyTo != null) 'reply_to_message_id': _replyTo!['id'],
     });
+    _clearReply();
   }
 
   Future<void> _openAttachmentMenu() async {
@@ -1758,6 +2220,11 @@ class _ChatPageState extends State<ChatPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
+              leading: const Icon(Icons.reply_rounded),
+              title: const Text('Ответить'),
+              onTap: () => Navigator.of(ctx).pop('reply'),
+            ),
+            ListTile(
               leading: const Icon(Icons.copy_rounded),
               title: Text(tr(lang, 'copy')),
               onTap: () => Navigator.of(ctx).pop('copy'),
@@ -1780,6 +2247,10 @@ class _ChatPageState extends State<ChatPage> {
     );
 
     if (!mounted || action == null) return;
+    if (action == 'reply') {
+      _setReplyTo(message);
+      return;
+    }
     if (action == 'copy') {
       final body = await _decryptBody(message['body']);
       await Clipboard.setData(ClipboardData(text: body));
@@ -1804,12 +2275,31 @@ class _ChatPageState extends State<ChatPage> {
           onPressed: () => Navigator.of(context).maybePop(),
         ),
         actions: [
+          if (!_isGroup && _otherUserId != null)
+            IconButton(
+              onPressed: _toggleBlock,
+              icon: Icon(_isBlocked ? Icons.lock_open_rounded : Icons.block),
+              tooltip: _isBlocked ? 'Разблокировать' : 'Заблокировать',
+            ),
           if (_isGroup)
             IconButton(
               onPressed: _openGroupMembers,
               icon: const Icon(Icons.manage_accounts_rounded),
               tooltip: 'Участники и роли',
             ),
+          PopupMenuButton<String>(
+            onSelected: (v) async {
+              if (v == 'leave') {
+                await _leaveConversation();
+              }
+            },
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'leave',
+                child: Text(_isGroup ? 'Покинуть группу' : 'Удалить чат'),
+              ),
+            ],
+          ),
         ],
       ),
       body: Container(
@@ -1831,6 +2321,8 @@ class _ChatPageState extends State<ChatPage> {
                   final m = _messages[index];
                   final isMine = m['sender_id'] == _me;
                   final ts = DateTime.parse(m['created_at'].toString()).toLocal();
+                  final replyId = m['reply_to_message_id']?.toString();
+                  final reply = replyId == null ? null : _messageById[replyId];
                   return Align(
                     alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
                     child: Container(
@@ -1846,6 +2338,28 @@ class _ChatPageState extends State<ChatPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                if (reply != null)
+                                  Container(
+                                    margin: const EdgeInsets.only(bottom: 6),
+                                    padding: const EdgeInsets.all(8),
+                                    decoration: BoxDecoration(
+                                      color: Colors.black.withOpacity(0.25),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: Colors.white12),
+                                    ),
+                                    child: FutureBuilder<String>(
+                                      future: _replyPreviewText(reply!),
+                                      builder: (context, snapshot) {
+                                        final txt = snapshot.data ?? '';
+                                        return Text(
+                                          txt.isEmpty ? 'Ответ на сообщение' : txt,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                        );
+                                      },
+                                    ),
+                                  ),
                                 FutureBuilder<String>(
                                   future: _decryptBody(m['body']),
                                   builder: (context, snapshot) => Text(snapshot.data ?? ''),
@@ -1880,7 +2394,23 @@ class _ChatPageState extends State<ChatPage> {
                               ]),
                               const SizedBox(height: 4),
                               Text(
-                                '${isMine ? '✓ ' : ''}${timeago.format(ts, locale: 'en_short')}${m['edited_at'] != null ? ' · изм.' : ''}',
+                                () {
+                                  String mark = '';
+                                  if (isMine) {
+                                    if (!_isGroup) {
+                                      final readAt = _otherLastReadAt;
+                                      if (readAt != null && !readAt.isBefore(ts)) {
+                                        mark = '✓✓ ';
+                                      } else {
+                                        mark = '✓ ';
+                                      }
+                                    } else {
+                                      mark = '✓ ';
+                                    }
+                                  }
+                                  final edited = m['edited_at'] != null ? ' · изм.' : '';
+                                  return '${mark}${_formatMessageTime(ts)}$edited';
+                                }(),
                                 style: const TextStyle(fontSize: 11, color: Colors.white70),
                               ),
                             ],
@@ -1899,26 +2429,59 @@ class _ChatPageState extends State<ChatPage> {
                 child: Glass(
                   settings: widget.settings,
                   radius: 16,
-                  child: Row(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      IconButton(
-                        onPressed: _openAttachmentMenu,
-                        icon: const Icon(Icons.add_circle_outline_rounded),
-                      ),
-                      Expanded(
-                        child: TextField(
-                          controller: _input,
-                          minLines: 1,
-                          maxLines: 4,
-                          decoration: InputDecoration(
-                            hintText: tr(lang, 'message_hint'),
-                            border: InputBorder.none,
+                      if (_replyTo != null)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 6),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.reply_rounded, size: 18),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: FutureBuilder<String>(
+                                  future: _replyPreviewText(_replyTo!),
+                                  builder: (context, snapshot) {
+                                    final txt = snapshot.data ?? '';
+                                    return Text(
+                                      txt.isEmpty ? 'Ответ на сообщение' : txt,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                    );
+                                  },
+                                ),
+                              ),
+                              IconButton(
+                                onPressed: _clearReply,
+                                icon: const Icon(Icons.close_rounded, size: 18),
+                              ),
+                            ],
                           ),
                         ),
-                      ),
-                      FilledButton(
-                        onPressed: _send,
-                        child: const Icon(Icons.send_rounded),
+                      Row(
+                        children: [
+                          IconButton(
+                            onPressed: _openAttachmentMenu,
+                            icon: const Icon(Icons.add_circle_outline_rounded),
+                          ),
+                          Expanded(
+                            child: TextField(
+                              controller: _input,
+                              minLines: 1,
+                              maxLines: 4,
+                              decoration: InputDecoration(
+                                hintText: tr(lang, 'message_hint'),
+                                border: InputBorder.none,
+                              ),
+                            ),
+                          ),
+                          FilledButton(
+                            onPressed: _send,
+                            child: const Icon(Icons.send_rounded),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -1951,6 +2514,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _notifyPreview = true;
   bool _notifySound = true;
   bool _notifyVibration = true;
+  List<Map<String, dynamic>> _blockedUsers = const [];
 
   Future<void> _loadNotifyPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -1961,6 +2525,24 @@ class _SettingsPageState extends State<SettingsPage> {
       _notifySound = prefs.getBool('notify_sound') ?? true;
       _notifyVibration = prefs.getBool('notify_vibration') ?? true;
     });
+  }
+
+  Future<void> _loadBlockedUsers() async {
+    try {
+      final rows = await _db.rpc('get_blocked_users');
+      if (!mounted) return;
+      setState(() {
+        _blockedUsers = List<Map<String, dynamic>>.from(rows);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _blockedUsers = const []);
+    }
+  }
+
+  Future<void> _unblockUser(String id) async {
+    await _db.rpc('unblock_user', params: {'p_user': id});
+    await _loadBlockedUsers();
   }
 
   Future<void> _setNotify(String key, bool value) async {
@@ -2073,6 +2655,7 @@ class _SettingsPageState extends State<SettingsPage> {
   void initState() {
     super.initState();
     _loadNotifyPrefs();
+    _loadBlockedUsers();
   }
 
   @override
@@ -2164,6 +2747,36 @@ class _SettingsPageState extends State<SettingsPage> {
                     trailing: const Icon(Icons.chevron_right),
                     onTap: _changePasswordDialog,
                   ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            Glass(
+              settings: settings,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const ListTile(
+                    leading: Icon(Icons.block_outlined),
+                    title: Text('Блокировки'),
+                    subtitle: Text('Заблокированные пользователи'),
+                  ),
+                  if (_blockedUsers.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.only(left: 16, right: 16, bottom: 12),
+                      child: Text('Нет заблокированных пользователей', style: TextStyle(color: Colors.white70)),
+                    )
+                  else
+                    ..._blockedUsers.map(
+                      (u) => ListTile(
+                        title: Text((u['full_name'] ?? u['username'] ?? 'User').toString()),
+                        subtitle: Text('@${u['username'] ?? 'user'}'),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.lock_open_rounded),
+                          onPressed: () => _unblockUser(u['id'].toString()),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),

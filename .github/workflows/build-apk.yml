@@ -43,7 +43,7 @@ jobs:
               s = s.replace('<manifest xmlns:android="http://schemas.android.com/apk/res/android">', '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET" />')
           mf.write_text(s)
           st = Path('android/app/src/main/res/values/strings.xml')
-          st.write_text('<resources>\n    <string name="app_name">PMessenger</string>\n</resources>\n')
+          st.write_text('<resources>\n    <string name="app_name">PIG Messenger</string>\n</resources>\n')
           PY2
 
       - name: Install dependencies
@@ -54,18 +54,13 @@ jobs:
 
       - name: Build release APK
         run: |
-          SUPABASE_URL="${{ vars.SUPABASE_URL }}"
-          SUPABASE_ANON_KEY="${{ vars.SUPABASE_ANON_KEY }}"
-          CHAT_CRYPTO_SECRET="${{ vars.CHAT_CRYPTO_SECRET }}"
+          SUPABASE_URL="${{ secrets.SUPABASE_URL || vars.SUPABASE_URL }}"
+          SUPABASE_ANON_KEY="${{ secrets.SUPABASE_ANON_KEY || vars.SUPABASE_ANON_KEY }}"
+          CHAT_CRYPTO_SECRET="${{ secrets.CHAT_CRYPTO_SECRET || vars.CHAT_CRYPTO_SECRET }}"
 
-          if [ -z "$SUPABASE_URL" ]; then
-            SUPABASE_URL="https://tmgiciwryliplkvewlhp.supabase.co"
-          fi
-          if [ -z "$SUPABASE_ANON_KEY" ]; then
-            SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM"
-          fi
-          if [ -z "$CHAT_CRYPTO_SECRET" ]; then
-            CHAT_CRYPTO_SECRET="pmessenger_change_this_secret"
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ] || [ -z "$CHAT_CRYPTO_SECRET" ]; then
+            echo "Missing SUPABASE_URL / SUPABASE_ANON_KEY / CHAT_CRYPTO_SECRET"
+            exit 1
           fi
 
           flutter build apk --release \
@@ -73,9 +68,22 @@ jobs:
             --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
             --dart-define=CHAT_CRYPTO_SECRET="$CHAT_CRYPTO_SECRET"
 
+      - name: Install pigz
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pigz
+
+      - name: Compress APK with pigz
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/app-release.apk.copy
+          pigz -f -9 build/app/outputs/flutter-apk/app-release.apk.copy
+          mv build/app/outputs/flutter-apk/app-release.apk.copy.gz build/app/outputs/flutter-apk/app-release.apk.gz
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
           name: PMessenger APK ${{ github.run_number }}
-          files: build/app/outputs/flutter-apk/app-release.apk
+          files: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-release.apk.gz
