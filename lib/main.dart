@@ -15,16 +15,17 @@ import 'package:mime/mime.dart';
 
 const _supabaseUrl = String.fromEnvironment(
   "SUPABASE_URL",
-  defaultValue: "",
+  defaultValue: "https://tmgiciwryliplkvewlhp.supabase.co",
 );
 const _supabaseAnonKey = String.fromEnvironment(
   "SUPABASE_ANON_KEY",
-  defaultValue: "",
+  defaultValue:
+      "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM",
 );
 
 const _chatCryptoSecret = String.fromEnvironment(
   "CHAT_CRYPTO_SECRET",
-  defaultValue: "",
+  defaultValue: "pmessenger_change_this_secret",
 );
 const _ru = "ru";
 const _kk = 'kk';

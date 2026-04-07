@@ -54,10 +54,24 @@ jobs:
 
       - name: Build release APK
         run: |
+          SUPABASE_URL="${{ vars.SUPABASE_URL }}"
+          SUPABASE_ANON_KEY="${{ vars.SUPABASE_ANON_KEY }}"
+          CHAT_CRYPTO_SECRET="${{ vars.CHAT_CRYPTO_SECRET }}"
+
+          if [ -z "$SUPABASE_URL" ]; then
+            SUPABASE_URL="https://tmgiciwryliplkvewlhp.supabase.co"
+          fi
+          if [ -z "$SUPABASE_ANON_KEY" ]; then
+            SUPABASE_ANON_KEY="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM"
+          fi
+          if [ -z "$CHAT_CRYPTO_SECRET" ]; then
+            CHAT_CRYPTO_SECRET="pmessenger_change_this_secret"
+          fi
+
           flutter build apk --release \
-            --dart-define=SUPABASE_URL=${{ vars.SUPABASE_URL }} \
-            --dart-define=SUPABASE_ANON_KEY=${{ vars.SUPABASE_ANON_KEY }} \
-            --dart-define=CHAT_CRYPTO_SECRET=${{ vars.CHAT_CRYPTO_SECRET }}
+            --dart-define=SUPABASE_URL="$SUPABASE_URL" \
+            --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \
+            --dart-define=CHAT_CRYPTO_SECRET="$CHAT_CRYPTO_SECRET"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
