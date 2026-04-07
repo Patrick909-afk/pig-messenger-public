@@ -53,7 +53,9 @@ jobs:
         run: flutter pub run flutter_launcher_icons
 
       - name: Build release APK
-        run: flutter build apk --release
+        run: |
+          flutter build apk --release \
+            --dart-define=CHAT_CRYPTO_SECRET=${{ vars.CHAT_CRYPTO_SECRET }}
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

@@ -206,7 +206,9 @@ end;
 $$;
 
 
-create or replace function public.create_group_chat(group_title text, member_ids uuid[])
+drop function if exists public.create_group_chat(text, uuid[]);
+
+create or replace function public.create_group_chat(group_title text, member_ids text[] default null)
 returns uuid
 language plpgsql
 security definer
@@ -215,6 +217,7 @@ as $$
 declare
   me uuid := auth.uid();
   convo uuid;
+  member_text text;
   member_id uuid;
 begin
   if me is null then
@@ -231,16 +234,20 @@ begin
   values (convo, me, 'owner')
   on conflict do nothing;
 
-  if member_ids is not null then
-    foreach member_id in array member_ids loop
-      if member_id is not null and member_id <> me then
-        perform public.upsert_profile(member_id);
-        insert into public.conversation_participants (conversation_id, user_id, role)
-        values (convo, member_id, 'member')
-        on conflict do nothing;
-      end if;
-    end loop;
-  end if;
+  foreach member_text in array coalesce(member_ids, array[]::text[]) loop
+    begin
+      member_id := nullif(trim(member_text), '')::uuid;
+    exception when others then
+      continue;
+    end;
+
+    if member_id is not null and member_id <> me then
+      perform public.upsert_profile(member_id);
+      insert into public.conversation_participants (conversation_id, user_id, role)
+      values (convo, member_id, 'member')
+      on conflict do nothing;
+    end if;
+  end loop;
 
   return convo;
 end;
@@ -600,7 +607,7 @@ grant execute on function public.upsert_profile(uuid) to authenticated;
 grant execute on function public.add_friend_by_username(text) to authenticated;
 grant execute on function public.get_my_friends() to authenticated;
 grant execute on function public.get_friend_suggestions(integer) to authenticated;
-grant execute on function public.create_group_chat(text, uuid[]) to authenticated;
+grant execute on function public.create_group_chat(text, text[]) to authenticated;
 grant execute on function public.set_group_role(uuid, uuid, text) to authenticated;
 grant execute on function public.remove_group_member(uuid, uuid) to authenticated;
 

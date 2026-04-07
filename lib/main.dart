@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui';
 
@@ -8,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timeago/timeago.dart' as timeago;
+import 'package:cryptography/cryptography.dart';
 
 const _supabaseUrl = String.fromEnvironment(
   'SUPABASE_URL',
@@ -17,6 +20,11 @@ const _supabaseAnonKey = String.fromEnvironment(
   'SUPABASE_ANON_KEY',
   defaultValue:
       'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM',
+);
+
+const _chatCryptoSecret = String.fromEnvironment(
+  'CHAT_CRYPTO_SECRET',
+  defaultValue: 'pmessenger_change_this_secret',
 );
 
 const _ru = 'ru';
@@ -178,6 +186,59 @@ Future<void> main() async {
 
 SupabaseClient get _db => Supabase.instance.client;
 
+class MessageCrypto {
+  MessageCrypto(this.secret);
+
+  final String secret;
+  static final AesGcm _algo = AesGcm.with256bits();
+
+  final _rand = Random.secure();
+
+  Future<SecretKey> _keyForConversation(String conversationId) async {
+    final seed = utf8.encode('${secret}::${conversationId}');
+    final hash = await Sha256().hash(seed);
+    return SecretKey(hash.bytes);
+  }
+
+  List<int> _nonce() => List<int>.generate(12, (_) => _rand.nextInt(256));
+
+  Future<String> encryptText(String plainText, {required String conversationId}) async {
+    final encrypted = await _algo.encrypt(
+      utf8.encode(plainText),
+      secretKey: await _keyForConversation(conversationId),
+      nonce: _nonce(),
+    );
+    final payload = Uint8List.fromList([
+      ...encrypted.cipherText,
+      ...encrypted.mac.bytes,
+    ]);
+    return 'enc:v1:${base64Encode(encrypted.nonce)}:${base64Encode(payload)}';
+  }
+
+  Future<String> decryptText(String encryptedText, {required String conversationId}) async {
+    if (!encryptedText.startsWith('enc:v1:')) return encryptedText;
+
+    final parts = encryptedText.split(':');
+    if (parts.length < 4) return encryptedText;
+
+    try {
+      final nonce = base64Decode(parts[2]);
+      final payload = base64Decode(parts.sublist(3).join(':'));
+      if (payload.length < 16) return encryptedText;
+
+      final cipherText = payload.sublist(0, payload.length - 16);
+      final mac = Mac(payload.sublist(payload.length - 16));
+
+      final clear = await _algo.decrypt(
+        SecretBox(cipherText, nonce: nonce, mac: mac),
+        secretKey: await _keyForConversation(conversationId),
+      );
+      return utf8.decode(clear);
+    } catch (_) {
+      return encryptedText;
+    }
+  }
+}
 class AppSettings {
   AppSettings({
     required this.lang,
@@ -1071,6 +1132,7 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> {
   final _input = TextEditingController();
+  final _crypto = MessageCrypto(_chatCryptoSecret);
   final _scroll = ScrollController();
   List<Map<String, dynamic>> _messages = const [];
   RealtimeChannel? _channel;
@@ -1078,6 +1140,15 @@ class _ChatPageState extends State<ChatPage> {
   String _myRole = 'member';
 
   String get _me => _db.auth.currentUser!.id;
+
+  Future<String> _decryptBody(dynamic rawBody) async {
+    final value = (rawBody ?? '').toString();
+    return _crypto.decryptText(value, conversationId: widget.conversationId);
+  }
+
+  Future<String> _encryptBody(String plainText) async {
+    return _crypto.encryptText(plainText, conversationId: widget.conversationId);
+  }
 
   @override
   void initState() {
@@ -1299,12 +1370,21 @@ class _ChatPageState extends State<ChatPage> {
     final text = _input.text.trim();
     if (text.isEmpty) return;
     _input.clear();
-    await _db.from('messages').insert({
-      'conversation_id': widget.conversationId,
-      'sender_id': _me,
-      'body': text,
-      'message_type': 'text',
-    });
+
+    try {
+      final encryptedBody = await _encryptBody(text);
+      await _db.from('messages').insert({
+        'conversation_id': widget.conversationId,
+        'sender_id': _me,
+        'body': encryptedBody,
+        'message_type': 'text',
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка отправки сообщения: $e')),
+      );
+    }
   }
 
   Future<void> _pickAndSendAttachment(String type) async {
@@ -1317,7 +1397,7 @@ class _ChatPageState extends State<ChatPage> {
 
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: false,
-      withData: true,
+      withData: false,
       type: pickerType,
     );
 
@@ -1349,7 +1429,7 @@ class _ChatPageState extends State<ChatPage> {
       await _db.from('messages').insert({
         'conversation_id': widget.conversationId,
         'sender_id': _me,
-        'body': picked.name,
+        'body': await _encryptBody(picked.name),
         'message_type': type,
         'media_url': url,
         'file_name': picked.name,
@@ -1391,7 +1471,7 @@ class _ChatPageState extends State<ChatPage> {
     await _db.from('messages').insert({
       'conversation_id': widget.conversationId,
       'sender_id': _me,
-      'body': 'Геолокация',
+      'body': await _encryptBody('Геолокация'),
       'message_type': 'location',
       'latitude': lat,
       'longitude': lon,
@@ -1459,7 +1539,7 @@ class _ChatPageState extends State<ChatPage> {
     final next = ctrl.text.trim();
     if (next.isEmpty) return;
 
-    await _db.from('messages').update({'body': next}).eq('id', id);
+    await _db.from('messages').update({'body': await _encryptBody(next)}).eq('id', id);
   }
 
   Future<void> _onMessageLongPress(Map<String, dynamic> message) async {
@@ -1498,11 +1578,13 @@ class _ChatPageState extends State<ChatPage> {
 
     if (!mounted || action == null) return;
     if (action == 'copy') {
-      await Clipboard.setData(ClipboardData(text: message['body'].toString()));
+      final body = await _decryptBody(message['body']);
+      await Clipboard.setData(ClipboardData(text: body));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Скопировано')));
     } else if (action == 'edit' && isMine) {
-      await _editMessage(message['id'].toString(), message['body']?.toString() ?? '');
+      final plain = await _decryptBody(message['body']);
+      await _editMessage(message['id'].toString(), plain);
     } else if (action == 'delete' && canDelete) {
       await _deleteMessage(message['id'].toString());
     }
@@ -1557,7 +1639,10 @@ class _ChatPageState extends State<ChatPage> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                Text(m['body']?.toString() ?? ''),
+                                FutureBuilder<String>(
+                                  future: _decryptBody(m['body']),
+                                  builder: (context, snapshot) => Text(snapshot.data ?? ''),
+                                ),
                                 if ((m['media_url'] ?? '').toString().isNotEmpty)
                                   Padding(
                                     padding: const EdgeInsets.only(top: 6),
