@@ -696,25 +696,33 @@ class _FriendsPageState extends State<FriendsPage> {
   Future<void> _loadFriends() async {
     final current = _db.auth.currentUser;
     if (current == null) return;
-    await _touchLastSeen();
-
-    final rows = await _db.rpc('get_my_friends');
-
-    if (!mounted) return;
-    setState(() {
-      _friends = List<Map<String, dynamic>>.from(rows);
-    });
+    try {
+      await _touchLastSeen();
+      final rows = await _db.rpc('get_my_friends');
+      if (!mounted) return;
+      setState(() {
+        _friends = List<Map<String, dynamic>>.from(rows);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _friends = const []);
+    }
   }
 
   Future<void> _loadSuggested() async {
     final current = _db.auth.currentUser;
     if (current == null) return;
 
-    final rows = await _db.rpc('get_friend_suggestions', params: {'limit_count': 10});
-    if (!mounted) return;
-    setState(() {
-      _suggested = List<Map<String, dynamic>>.from(rows);
-    });
+    try {
+      final rows = await _db.rpc('get_friend_suggestions', params: {'limit_count': 10});
+      if (!mounted) return;
+      setState(() {
+        _suggested = List<Map<String, dynamic>>.from(rows);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _suggested = const []);
+    }
   }
 
   Future<void> _loadGroups() async {
@@ -783,21 +791,28 @@ class _FriendsPageState extends State<FriendsPage> {
   }
 
   Future<void> _openChat(Map<String, dynamic> friend) async {
-    final conversationId = await _db.rpc(
-      'start_dm',
-      params: {'other_user': friend['id']},
-    ) as String;
+    try {
+      final conversationId = await _db.rpc(
+        'start_dm',
+        params: {'other_user': friend['id']},
+      ) as String;
 
-    if (!mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ChatPage(
-          settings: widget.settings,
-          conversationId: conversationId,
-          peerName: (friend['full_name'] ?? friend['username'] ?? 'Friend').toString(),
+      if (!mounted) return;
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ChatPage(
+            settings: widget.settings,
+            conversationId: conversationId,
+            peerName: (friend['full_name'] ?? friend['username'] ?? 'Friend').toString(),
+          ),
         ),
-      ),
-    );
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось открыть чат: $e')),
+      );
+    }
   }
 
 
@@ -1514,18 +1529,25 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _loadMessages() async {
-    final rows = await _db
-        .from('messages')
-        .select('id, body, created_at, edited_at, sender_id, message_type, media_url, file_name, mime_type, latitude, longitude')
-        .eq('conversation_id', widget.conversationId)
-        .order('created_at');
+    try {
+      final rows = await _db
+          .from('messages')
+          .select('id, body, created_at, edited_at, sender_id, message_type, media_url, file_name, mime_type, latitude, longitude')
+          .eq('conversation_id', widget.conversationId)
+          .order('created_at');
 
-    if (!mounted) return;
-    setState(() => _messages = List<Map<String, dynamic>>.from(rows));
+      if (!mounted) return;
+      setState(() => _messages = List<Map<String, dynamic>>.from(rows));
 
-    await Future<void>.delayed(const Duration(milliseconds: 16));
-    if (_scroll.hasClients) {
-      _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      if (_scroll.hasClients) {
+        _scroll.jumpTo(_scroll.position.maxScrollExtent);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка загрузки сообщений: $e')),
+      );
     }
   }
 
@@ -1777,6 +1799,10 @@ class _ChatPageState extends State<ChatPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.peerName),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.of(context).maybePop(),
+        ),
         actions: [
           if (_isGroup)
             IconButton(
