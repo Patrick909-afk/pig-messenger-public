@@ -208,9 +208,15 @@ with check (
   )
 );
 
+drop policy if exists "messages_delete_own" on public.messages;
+create policy "messages_delete_own"
+on public.messages
+for delete
+using (sender_id = auth.uid());
+
 grant usage on schema public to anon, authenticated;
 grant select, update on public.profiles to authenticated;
 grant select, insert on public.conversations to authenticated;
 grant select, insert on public.conversation_participants to authenticated;
-grant select, insert on public.messages to authenticated;
+grant select, insert, delete on public.messages to authenticated;
 grant execute on function public.start_dm(uuid) to authenticated;

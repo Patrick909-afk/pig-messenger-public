@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:timeago/timeago.dart' as timeago;
@@ -11,7 +12,8 @@ const _supabaseUrl = String.fromEnvironment(
 );
 const _supabaseAnonKey = String.fromEnvironment(
   'SUPABASE_ANON_KEY',
-  defaultValue: '',
+  defaultValue:
+      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM',
 );
 
 const _ru = 'ru';
@@ -23,7 +25,7 @@ const _i18n = <String, Map<String, String>>{
     _kk: 'PMessenger',
   },
   'subtitle': {
-    _ru: 'мессенджер для одноклассников',
+    _ru: 'быстрый чат без лишнего',
     _kk: 'достарга арналған мессенджер',
   },
   'email': {
@@ -129,6 +131,27 @@ const _i18n = <String, Map<String, String>>{
   'dns_help': {
     _ru: 'Ошибка сети/DNS. Проверь интернет и Private DNS на телефоне.',
     _kk: 'Желі/DNS қатесі. Телефондағы интернет пен Private DNS тексер.',
+  },
+
+  'copy': {
+    _ru: 'Копировать',
+    _kk: 'Көшіру',
+  },
+  'delete': {
+    _ru: 'Удалить',
+    _kk: 'Жою',
+  },
+  'online': {
+    _ru: 'в сети',
+    _kk: 'желіде',
+  },
+  'last_seen': {
+    _ru: 'был(а) ',
+    _kk: 'соңғы рет ',
+  },
+  'name_optional': {
+    _ru: 'Имя (необязательно)',
+    _kk: 'Аты (міндетті емес)',
   },
 };
 
@@ -346,6 +369,7 @@ class _AuthPageState extends State<AuthPage> {
   final _name = TextEditingController();
   bool _isLogin = true;
   bool _busy = false;
+  bool _obscurePassword = true;
 
   String _toAuthEmail(String login) {
     final normalized = login.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.-]'), '');
@@ -357,6 +381,13 @@ class _AuthPageState extends State<AuthPage> {
     if (loginRaw.length < 3) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Логин должен быть минимум 3 символа')),
+      );
+      return;
+    }
+
+    if (_password.text.length < 6) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Пароль должен быть минимум 6 символов')),
       );
       return;
     }
@@ -413,38 +444,77 @@ class _AuthPageState extends State<AuthPage> {
                 settings: widget.settings,
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    const Icon(Icons.forum_rounded, size: 48, color: Color(0xFF28C4D9)),
+                    const SizedBox(height: 10),
                     Text(
                       tr(lang, 'app_name'),
+                      textAlign: TextAlign.center,
                       style: const TextStyle(fontSize: 30, fontWeight: FontWeight.w800),
                     ),
                     const SizedBox(height: 8),
-                    Text(tr(lang, 'subtitle')),
+                    Text(
+                      tr(lang, 'subtitle'),
+                      textAlign: TextAlign.center,
+                    ),
                     const SizedBox(height: 16),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        ChoiceChip(
+                          label: Text(tr(lang, 'login')),
+                          selected: _isLogin,
+                          onSelected: _busy ? null : (_) => setState(() => _isLogin = true),
+                        ),
+                        const SizedBox(width: 8),
+                        ChoiceChip(
+                          label: Text(tr(lang, 'register')),
+                          selected: !_isLogin,
+                          onSelected: _busy ? null : (_) => setState(() => _isLogin = false),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
                     if (!_isLogin)
                       TextField(
                         controller: _name,
-                        decoration: InputDecoration(labelText: tr(lang, 'your_name')),
+                        decoration: InputDecoration(labelText: tr(lang, 'name_optional')),
                       ),
                     if (!_isLogin) const SizedBox(height: 10),
                     TextField(
                       controller: _login,
-                      decoration: InputDecoration(labelText: tr(lang, 'email')),
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      decoration: InputDecoration(
+                        labelText: tr(lang, 'email'),
+                        prefixIcon: const Icon(Icons.alternate_email_rounded),
+                      ),
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: _password,
-                      obscureText: true,
-                      decoration: InputDecoration(labelText: tr(lang, 'password')),
+                      obscureText: _obscurePassword,
+                      decoration: InputDecoration(
+                        labelText: tr(lang, 'password'),
+                        prefixIcon: const Icon(Icons.lock_outline),
+                        suffixIcon: IconButton(
+                          onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                          icon: Icon(_obscurePassword ? Icons.visibility : Icons.visibility_off),
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 16),
-                    FilledButton(
+                    FilledButton.icon(
                       onPressed: _busy ? null : _submit,
-                      child: Text(_isLogin ? tr(lang, 'login') : tr(lang, 'create_account')),
-                    ),
-                    TextButton(
-                      onPressed: _busy ? null : () => setState(() => _isLogin = !_isLogin),
-                      child: Text(_isLogin ? tr(lang, 'no_account') : tr(lang, 'has_account')),
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.arrow_forward_rounded),
+                      label: Text(_isLogin ? tr(lang, 'login') : tr(lang, 'create_account')),
                     ),
                   ],
                 ),
@@ -479,12 +549,34 @@ class _FriendsPageState extends State<FriendsPage> {
   @override
   void initState() {
     super.initState();
+    _touchLastSeen();
     _loadFriends();
+  }
+
+  Future<void> _touchLastSeen() async {
+    final current = _db.auth.currentUser;
+    if (current == null) return;
+    await _db
+        .from('profiles')
+        .update({'last_seen': DateTime.now().toUtc().toIso8601String()})
+        .eq('id', current.id);
+  }
+
+  String _presenceText(Map<String, dynamic> friend) {
+    final lang = widget.settings.lang;
+    final raw = friend['last_seen'];
+    if (raw == null) return '';
+    final dt = DateTime.tryParse(raw.toString());
+    if (dt == null) return '';
+    final delta = DateTime.now().toUtc().difference(dt.toUtc());
+    if (delta.inMinutes <= 2) return tr(lang, 'online');
+    return '${tr(lang, 'last_seen')}${timeago.format(dt.toLocal(), locale: 'en_short')}';
   }
 
   Future<void> _loadFriends() async {
     final current = _db.auth.currentUser;
     if (current == null) return;
+    await _touchLastSeen();
 
     final rows = await _db
         .from('profiles')
@@ -602,7 +694,7 @@ class _FriendsPageState extends State<FriendsPage> {
                         title: Text(
                           (friend['full_name'] ?? friend['username'] ?? 'Friend').toString(),
                         ),
-                        subtitle: Text('@${friend['username'] ?? 'user'}'),
+                        subtitle: Text(_presenceText(friend).isEmpty ? '@${friend['username'] ?? 'user'}' : _presenceText(friend)),
                         trailing: const Icon(Icons.chat_bubble_outline_rounded),
                       ),
                     ),
@@ -699,6 +791,45 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
+  Future<void> _deleteMessage(String id) async {
+    await _db.from('messages').delete().eq('id', id).eq('sender_id', _me);
+  }
+
+  Future<void> _onMessageLongPress(Map<String, dynamic> message) async {
+    final lang = widget.settings.lang;
+    final isMine = message['sender_id'] == _me;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.copy_rounded),
+              title: Text(tr(lang, 'copy')),
+              onTap: () => Navigator.of(ctx).pop('copy'),
+            ),
+            if (isMine)
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded),
+                title: Text(tr(lang, 'delete')),
+                onTap: () => Navigator.of(ctx).pop('delete'),
+              ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || action == null) return;
+    if (action == 'copy') {
+      await Clipboard.setData(ClipboardData(text: message['body'].toString()));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Скопировано')));
+    } else if (action == 'delete' && isMine) {
+      await _deleteMessage(message['id'].toString());
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final lang = widget.settings.lang;
@@ -728,17 +859,19 @@ class _ChatPageState extends State<ChatPage> {
                     child: Container(
                       margin: const EdgeInsets.symmetric(vertical: 6),
                       constraints: const BoxConstraints(maxWidth: 320),
-                      child: Glass(
-                        settings: widget.settings,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                        radius: 16,
-                        child: Column(
+                      child: GestureDetector(
+                        onLongPress: () => _onMessageLongPress(m),
+                        child: Glass(
+                          settings: widget.settings,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          radius: 16,
+                          child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(m['body'].toString()),
                             const SizedBox(height: 4),
                             Text(
-                              timeago.format(ts, locale: 'en_short'),
+                              isMine ? '✓ ${timeago.format(ts, locale: 'en_short')}' : timeago.format(ts, locale: 'en_short'),
                               style: const TextStyle(fontSize: 11, color: Colors.white70),
                             ),
                           ],
