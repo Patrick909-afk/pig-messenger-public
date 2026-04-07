@@ -32,6 +32,10 @@ const _i18n = <String, Map<String, String>>{
     _ru: 'Логин',
     _kk: 'Логин',
   },
+  'alias': {
+    _ru: 'Псевдоним',
+    _kk: 'Лақап ат',
+  },
   'password': {
     _ru: 'Пароль',
     _kk: 'Құпия сөз',
@@ -126,11 +130,15 @@ const _i18n = <String, Map<String, String>>{
   },
   'auth_created': {
     _ru: 'Аккаунт создан. Теперь заходи по логину и паролю.',
-    _kk: 'Аккаунт ашылды. Растау қосулы болса, поштаны тексер.',
+    _kk: 'Аккаунт ашылды. Енді логин мен құпия сөзбен кір.',
   },
   'dns_help': {
     _ru: 'Ошибка сети/DNS. Проверь интернет и Private DNS на телефоне.',
     _kk: 'Желі/DNS қатесі. Телефондағы интернет пен Private DNS тексер.',
+  },
+  'over_rate': {
+    _ru: 'Лимит регистрации на Supabase временно достигнут. Попробуй позже или войди в уже созданный аккаунт.',
+    _kk: 'Supabase тіркелу лимиті уақытша бітті. Кейінірек қайтала немесе бар аккаунтқа кір.',
   },
 
   'copy': {
@@ -414,10 +422,14 @@ class _AuthPageState extends State<AuthPage> {
     } catch (e) {
       if (!mounted) return;
       final text = e.toString();
-      final hint = text.contains('Failed host lookup')
-          ? '\n${tr(widget.settings.lang, 'dns_help')}'
-          : '';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$text$hint')));
+      final lower = text.toLowerCase();
+      String message = text;
+      if (lower.contains('over_email_send_rate_limit') || lower.contains('statuscode: 429')) {
+        message = tr(widget.settings.lang, 'over_rate');
+      } else if (text.contains('Failed host lookup')) {
+        message = '${text}\n${tr(widget.settings.lang, 'dns_help')}';
+      }
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -479,7 +491,7 @@ class _AuthPageState extends State<AuthPage> {
                     if (!_isLogin)
                       TextField(
                         controller: _name,
-                        decoration: InputDecoration(labelText: tr(lang, 'name_optional')),
+                        decoration: InputDecoration(labelText: tr(lang, 'alias')),
                       ),
                     if (!_isLogin) const SizedBox(height: 10),
                     TextField(
