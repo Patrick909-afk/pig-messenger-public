@@ -25,3 +25,10 @@ flutter pub get
 flutter pub run flutter_launcher_icons
 flutter build apk --release
 ```
+
+
+## Secrets
+Use runtime defines for keys:
+```bash
+flutter run --dart-define=SUPABASE_URL=https://tmgiciwryliplkvewlhp.supabase.co --dart-define=SUPABASE_ANON_KEY=YOUR_ANON_KEY
+```

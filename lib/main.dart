@@ -11,8 +11,7 @@ const _supabaseUrl = String.fromEnvironment(
 );
 const _supabaseAnonKey = String.fromEnvironment(
   'SUPABASE_ANON_KEY',
-  defaultValue:
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRtZ2ljaXdyeWxpcGxrdmV3bGhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1MjU4NzEsImV4cCI6MjA5MTEwMTg3MX0.z0X3Yo5VCDxxvhswI3Q_rF99w2My8nWfspXN3fxBJAM',
+  defaultValue: '',
 );
 
 const _ru = 'ru';
