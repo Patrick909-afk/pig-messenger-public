@@ -21,6 +21,11 @@ create table if not exists public.conversations (
   created_at timestamptz not null default now()
 );
 
+alter table public.conversations
+  add column if not exists description text;
+alter table public.conversations
+  add column if not exists icon_url text;
+
 create table if not exists public.conversation_participants (
   conversation_id uuid not null references public.conversations(id) on delete cascade,
   user_id uuid not null references public.profiles(id) on delete cascade,
