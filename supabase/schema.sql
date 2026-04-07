@@ -31,6 +31,14 @@ alter table public.conversation_participants
   add column if not exists role text not null default 'member'
   check (role in ('owner','admin','member'));
 
+create table if not exists public.friendships (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  friend_id uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key (user_id, friend_id),
+  check (user_id < friend_id)
+);
+
 create table if not exists public.messages (
   id uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references public.conversations(id) on delete cascade,
@@ -55,6 +63,8 @@ alter table public.messages
   add column if not exists longitude double precision;
 alter table public.messages
   add column if not exists meta jsonb not null default '{}'::jsonb;
+alter table public.messages
+  add column if not exists edited_at timestamptz;
 
 alter table public.messages drop constraint if exists messages_body_check;
 alter table public.messages add constraint messages_body_check check (
@@ -68,6 +78,27 @@ create index if not exists idx_messages_conversation_created
 
 create index if not exists idx_participants_user
   on public.conversation_participants(user_id);
+
+create or replace function public.upsert_profile(p_user uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if p_user is null then
+    return;
+  end if;
+
+  insert into public.profiles (id, username, full_name)
+  values (
+    p_user,
+    'user_' || replace(p_user::text, '-', ''),
+    'User'
+  )
+  on conflict (id) do nothing;
+end;
+$$;
 
 create or replace function public.handle_new_user()
 returns trigger
@@ -108,8 +139,25 @@ $$;
 
 drop trigger if exists trg_touch_conversation on public.messages;
 create trigger trg_touch_conversation
-after insert on public.messages
+after insert or update on public.messages
 for each row execute function public.touch_conversation();
+
+create or replace function public.mark_message_edited_at()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  new.edited_at := now();
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_mark_message_edited on public.messages;
+create trigger trg_mark_message_edited
+before update on public.messages
+for each row execute function public.mark_message_edited_at();
 
 create or replace function public.start_dm(other_user uuid)
 returns uuid
@@ -128,6 +176,9 @@ begin
   if me = other_user then
     raise exception 'cannot create chat with self';
   end if;
+
+  perform public.upsert_profile(me);
+  perform public.upsert_profile(other_user);
 
   select cp1.conversation_id
   into convo
@@ -170,6 +221,8 @@ begin
     raise exception 'not authenticated';
   end if;
 
+  perform public.upsert_profile(me);
+
   insert into public.conversations (is_group, title, created_by)
   values (true, nullif(trim(group_title), ''), me)
   returning id into convo;
@@ -180,7 +233,8 @@ begin
 
   if member_ids is not null then
     foreach member_id in array member_ids loop
-      if member_id is not null and member_id <> me and exists (select 1 from public.profiles p where p.id = member_id) then
+      if member_id is not null and member_id <> me then
+        perform public.upsert_profile(member_id);
         insert into public.conversation_participants (conversation_id, user_id, role)
         values (convo, member_id, 'member')
         on conflict do nothing;
@@ -253,9 +307,99 @@ begin
 end;
 $$;
 
+
+create or replace function public.add_friend_by_username(p_username text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  me uuid := auth.uid();
+  target uuid;
+  left_id uuid;
+  right_id uuid;
+begin
+  if me is null then
+    raise exception 'not authenticated';
+  end if;
+
+  perform public.upsert_profile(me);
+
+  select p.id into target
+  from public.profiles p
+  where lower(p.username) = lower(trim(p_username))
+  limit 1;
+
+  if target is null then
+    raise exception 'user_not_found';
+  end if;
+
+  if target = me then
+    raise exception 'cannot_add_self';
+  end if;
+
+  perform public.upsert_profile(target);
+
+  left_id := least(me, target);
+  right_id := greatest(me, target);
+
+  insert into public.friendships (user_id, friend_id)
+  values (left_id, right_id)
+  on conflict do nothing;
+
+  return target;
+end;
+$$;
+
+create or replace function public.get_my_friends()
+returns table (
+  id uuid,
+  username text,
+  full_name text,
+  last_seen timestamptz,
+  created_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select p.id, p.username, p.full_name, p.last_seen, p.created_at
+  from public.friendships f
+  join public.profiles p
+    on p.id = case when f.user_id = auth.uid() then f.friend_id else f.user_id end
+  where auth.uid() in (f.user_id, f.friend_id)
+  order by p.last_seen desc nulls last, p.created_at desc;
+$$;
+
+create or replace function public.get_friend_suggestions(limit_count integer default 10)
+returns table (
+  id uuid,
+  username text,
+  full_name text,
+  last_seen timestamptz,
+  created_at timestamptz
+)
+language sql
+security definer
+set search_path = public
+as $$
+  select p.id, p.username, p.full_name, p.last_seen, p.created_at
+  from public.profiles p
+  where p.id <> auth.uid()
+    and not exists (
+      select 1
+      from public.friendships f
+      where (f.user_id = least(auth.uid(), p.id) and f.friend_id = greatest(auth.uid(), p.id))
+    )
+  order by p.last_seen desc nulls last, p.created_at desc
+  limit greatest(1, least(coalesce(limit_count, 10), 20));
+$$;
+
 alter table public.profiles enable row level security;
 alter table public.conversations enable row level security;
 alter table public.conversation_participants enable row level security;
+alter table public.friendships enable row level security;
 alter table public.messages enable row level security;
 
 -- profiles policies
@@ -352,6 +496,26 @@ using (
   )
 );
 
+
+-- friendships policies
+drop policy if exists "friendships_select_self" on public.friendships;
+create policy "friendships_select_self"
+on public.friendships
+for select
+using (auth.uid() in (user_id, friend_id));
+
+drop policy if exists "friendships_insert_self" on public.friendships;
+create policy "friendships_insert_self"
+on public.friendships
+for insert
+with check (auth.uid() in (user_id, friend_id));
+
+drop policy if exists "friendships_delete_self" on public.friendships;
+create policy "friendships_delete_self"
+on public.friendships
+for delete
+using (auth.uid() in (user_id, friend_id));
+
 -- messages policies
 drop policy if exists "messages_select_member" on public.messages;
 create policy "messages_select_member"
@@ -378,19 +542,97 @@ with check (
   )
 );
 
+drop policy if exists "messages_update_own_or_group_admin" on public.messages;
+create policy "messages_update_own_or_group_admin"
+on public.messages
+for update
+using (
+  sender_id = auth.uid()
+  or exists (
+    select 1
+    from public.conversation_participants cp
+    join public.conversations c on c.id = cp.conversation_id
+    where cp.conversation_id = messages.conversation_id
+      and cp.user_id = auth.uid()
+      and c.is_group = true
+      and cp.role in ('owner', 'admin')
+  )
+)
+with check (
+  sender_id = auth.uid()
+  or exists (
+    select 1
+    from public.conversation_participants cp
+    join public.conversations c on c.id = cp.conversation_id
+    where cp.conversation_id = messages.conversation_id
+      and cp.user_id = auth.uid()
+      and c.is_group = true
+      and cp.role in ('owner', 'admin')
+  )
+);
+
 drop policy if exists "messages_delete_own" on public.messages;
-create policy "messages_delete_own"
+drop policy if exists "messages_delete_own_or_group_admin" on public.messages;
+create policy "messages_delete_own_or_group_admin"
 on public.messages
 for delete
-using (sender_id = auth.uid());
+using (
+  sender_id = auth.uid()
+  or exists (
+    select 1
+    from public.conversation_participants cp
+    join public.conversations c on c.id = cp.conversation_id
+    where cp.conversation_id = messages.conversation_id
+      and cp.user_id = auth.uid()
+      and c.is_group = true
+      and cp.role in ('owner', 'admin')
+  )
+);
 
 grant usage on schema public to anon, authenticated;
 grant select, update on public.profiles to authenticated;
 grant select, insert on public.conversations to authenticated;
 grant select, insert, update, delete on public.conversation_participants to authenticated;
-grant select, insert, delete on public.messages to authenticated;
+grant select, insert, delete on public.friendships to authenticated;
+grant select, insert, update, delete on public.messages to authenticated;
 grant execute on function public.start_dm(uuid) to authenticated;
-
+grant execute on function public.upsert_profile(uuid) to authenticated;
+grant execute on function public.add_friend_by_username(text) to authenticated;
+grant execute on function public.get_my_friends() to authenticated;
+grant execute on function public.get_friend_suggestions(integer) to authenticated;
 grant execute on function public.create_group_chat(text, uuid[]) to authenticated;
 grant execute on function public.set_group_role(uuid, uuid, text) to authenticated;
 grant execute on function public.remove_group_member(uuid, uuid) to authenticated;
+
+
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('chat-media', 'chat-media', true, 104857600)
+on conflict (id) do nothing;
+
+drop policy if exists "chat_media_public_read" on storage.objects;
+create policy "chat_media_public_read"
+on storage.objects
+for select
+using (bucket_id = 'chat-media');
+
+drop policy if exists "chat_media_auth_insert" on storage.objects;
+create policy "chat_media_auth_insert"
+on storage.objects
+for insert
+to authenticated
+with check (bucket_id = 'chat-media');
+
+drop policy if exists "chat_media_owner_update" on storage.objects;
+create policy "chat_media_owner_update"
+on storage.objects
+for update
+to authenticated
+using (bucket_id = 'chat-media' and owner = auth.uid())
+with check (bucket_id = 'chat-media' and owner = auth.uid());
+
+drop policy if exists "chat_media_owner_delete" on storage.objects;
+create policy "chat_media_owner_delete"
+on storage.objects
+for delete
+to authenticated
+using (bucket_id = 'chat-media' and owner = auth.uid());

@@ -1,5 +1,8 @@
+import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -379,9 +382,27 @@ class _AuthPageState extends State<AuthPage> {
   bool _busy = false;
   bool _obscurePassword = true;
 
+  String _normalizeLogin(String login) {
+    return login.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.-]'), '');
+  }
+
   String _toAuthEmail(String login) {
-    final normalized = login.trim().toLowerCase().replaceAll(RegExp(r'[^a-z0-9_.-]'), '');
+    final normalized = _normalizeLogin(login);
     return '$normalized@pmessenger.local';
+  }
+
+  Future<void> _syncProfile({required String login, required String displayName}) async {
+    final user = _db.auth.currentUser;
+    if (user == null) return;
+    await _db.rpc('upsert_profile', params: {'p_user': user.id});
+    await _db
+        .from('profiles')
+        .update({
+          'username': _normalizeLogin(login),
+          'full_name': displayName,
+          'last_seen': DateTime.now().toUtc().toIso8601String(),
+        })
+        .eq('id', user.id);
   }
 
   Future<void> _submit() async {
@@ -407,6 +428,10 @@ class _AuthPageState extends State<AuthPage> {
           email: _toAuthEmail(_login.text),
           password: _password.text,
         );
+        await _syncProfile(
+          login: _login.text,
+          displayName: _name.text.trim().isEmpty ? _login.text.trim() : _name.text.trim(),
+        );
       } else {
         await _db.auth.signUp(
           email: _toAuthEmail(_login.text),
@@ -414,6 +439,10 @@ class _AuthPageState extends State<AuthPage> {
           data: {
             'full_name': _name.text.trim().isEmpty ? _login.text.trim() : _name.text.trim(),
           },
+        );
+        await _syncProfile(
+          login: _login.text,
+          displayName: _name.text.trim().isEmpty ? _login.text.trim() : _name.text.trim(),
         );
         if (!mounted) return;
         ScaffoldMessenger.of(context)
@@ -556,6 +585,7 @@ class FriendsPage extends StatefulWidget {
 class _FriendsPageState extends State<FriendsPage> {
   final _search = TextEditingController();
   List<Map<String, dynamic>> _friends = const [];
+  List<Map<String, dynamic>> _suggested = const [];
   List<Map<String, dynamic>> _groups = const [];
   bool _loading = true;
   int _tab = 0; // 0 friends, 1 groups
@@ -588,7 +618,7 @@ class _FriendsPageState extends State<FriendsPage> {
   }
 
   Future<void> _loadAll() async {
-    await Future.wait([_loadFriends(), _loadGroups()]);
+    await Future.wait([_loadFriends(), _loadGroups(), _loadSuggested()]);
     if (!mounted) return;
     setState(() => _loading = false);
   }
@@ -598,15 +628,22 @@ class _FriendsPageState extends State<FriendsPage> {
     if (current == null) return;
     await _touchLastSeen();
 
-    final rows = await _db
-        .from('profiles')
-        .select('id, username, full_name, last_seen')
-        .neq('id', current.id)
-        .order('last_seen', ascending: false);
+    final rows = await _db.rpc('get_my_friends');
 
     if (!mounted) return;
     setState(() {
       _friends = List<Map<String, dynamic>>.from(rows);
+    });
+  }
+
+  Future<void> _loadSuggested() async {
+    final current = _db.auth.currentUser;
+    if (current == null) return;
+
+    final rows = await _db.rpc('get_friend_suggestions', params: {'limit_count': 10});
+    if (!mounted) return;
+    setState(() {
+      _suggested = List<Map<String, dynamic>>.from(rows);
     });
   }
 
@@ -668,6 +705,46 @@ class _FriendsPageState extends State<FriendsPage> {
         ),
       ),
     );
+  }
+
+
+  Future<void> _showAddFriendDialog() async {
+    final usernameCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Добавить друга'),
+        content: TextField(
+          controller: usernameCtrl,
+          decoration: const InputDecoration(labelText: 'Username (без @)'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Добавить')),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+    final username = usernameCtrl.text.trim().replaceFirst('@', '');
+    if (username.isEmpty) return;
+
+    try {
+      await _db.rpc('add_friend_by_username', params: {'p_username': username});
+      await _loadAll();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Друг добавлен')));
+    } catch (e) {
+      if (!mounted) return;
+      final text = e.toString().toLowerCase();
+      if (text.contains('user_not_found')) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Пользователь не найден')));
+      } else if (text.contains('cannot_add_self')) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Нельзя добавить себя')));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+      }
+    }
   }
 
   Future<void> _openGroup(Map<String, dynamic> group) async {
@@ -795,6 +872,12 @@ class _FriendsPageState extends State<FriendsPage> {
       appBar: AppBar(
         title: Text('${tr(lang, 'app_name')} - ${tr(lang, 'friends')}'),
         actions: [
+          if (_tab == 0)
+            IconButton(
+              onPressed: _showAddFriendDialog,
+              icon: const Icon(Icons.person_add_alt_1_rounded),
+              tooltip: 'Добавить друга',
+            ),
           if (_tab == 1)
             IconButton(
               onPressed: _createGroup,
@@ -860,38 +943,79 @@ class _FriendsPageState extends State<FriendsPage> {
               if (_loading)
                 const Center(child: CircularProgressIndicator())
               else if (_tab == 0)
-                ...(friends.isEmpty
-                    ? [
-                        Glass(
-                          settings: widget.settings,
-                          child: ListTile(
-                            title: Text(tr(lang, 'empty_friends')),
-                            subtitle: Text(tr(lang, 'ask_friends')),
-                          ),
-                        )
-                      ]
-                    : friends.map(
-                        (friend) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Glass(
+                ...[
+                  ...(friends.isEmpty
+                      ? [
+                          Glass(
                             settings: widget.settings,
                             child: ListTile(
-                              onTap: () => _openChat(friend),
-                              leading: const CircleAvatar(
-                                backgroundColor: Color(0xFF28C4D9),
-                                child: Icon(Icons.person, color: Colors.white),
+                              title: Text(tr(lang, 'empty_friends')),
+                              subtitle: Text(tr(lang, 'ask_friends')),
+                            ),
+                          )
+                        ]
+                      : friends.map(
+                          (friend) => Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Glass(
+                              settings: widget.settings,
+                              child: ListTile(
+                                onTap: () => _openChat(friend),
+                                leading: const CircleAvatar(
+                                  backgroundColor: Color(0xFF28C4D9),
+                                  child: Icon(Icons.person, color: Colors.white),
+                                ),
+                                title: Text((friend['full_name'] ?? friend['username'] ?? 'Friend').toString()),
+                                subtitle: Text(
+                                  _presenceText(friend).isEmpty
+                                      ? '@${friend['username'] ?? 'user'}'
+                                      : _presenceText(friend),
+                                ),
+                                trailing: const Icon(Icons.chat_bubble_outline_rounded),
                               ),
-                              title: Text((friend['full_name'] ?? friend['username'] ?? 'Friend').toString()),
-                              subtitle: Text(
-                                _presenceText(friend).isEmpty
-                                    ? '@${friend['username'] ?? 'user'}'
-                                    : _presenceText(friend),
-                              ),
-                              trailing: const Icon(Icons.chat_bubble_outline_rounded),
+                            ),
+                          ),
+                        )),
+                  if (_suggested.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 8),
+                      child: Text('Возможные друзья', style: TextStyle(fontWeight: FontWeight.w700)),
+                    ),
+                    ..._suggested.take(10).map(
+                      (u) => Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Glass(
+                          settings: widget.settings,
+                          child: ListTile(
+                            leading: const CircleAvatar(
+                              backgroundColor: Color(0xFF6C5CE7),
+                              child: Icon(Icons.person_outline_rounded, color: Colors.white),
+                            ),
+                            title: Text((u['full_name'] ?? u['username'] ?? 'User').toString()),
+                            subtitle: Text('@${u['username'] ?? 'user'}'),
+                            trailing: IconButton(
+                              icon: const Icon(Icons.person_add_alt_1_rounded),
+                              onPressed: () async {
+                                final username = (u['username'] ?? '').toString();
+                                if (username.isEmpty) return;
+                                try {
+                                  await _db.rpc('add_friend_by_username', params: {'p_username': username});
+                                  await _loadAll();
+                                  if (!mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Друг добавлен')));
+                                } catch (e) {
+                                  if (!mounted) return;
+                                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Ошибка: $e')));
+                                }
+                              },
                             ),
                           ),
                         ),
-                      ))
+                      ),
+                    ),
+                  ],
+                ]
               else
                 ...(groups.isEmpty
                     ? [
@@ -1141,7 +1265,7 @@ class _ChatPageState extends State<ChatPage> {
   Future<void> _loadMessages() async {
     final rows = await _db
         .from('messages')
-        .select('id, body, created_at, sender_id, message_type, media_url, file_name, mime_type, latitude, longitude')
+        .select('id, body, created_at, edited_at, sender_id, message_type, media_url, file_name, mime_type, latitude, longitude')
         .eq('conversation_id', widget.conversationId)
         .order('created_at');
 
@@ -1183,48 +1307,60 @@ class _ChatPageState extends State<ChatPage> {
     });
   }
 
-  Future<void> _sendMediaLink({
-    required String type,
-    required String title,
-    String? defaultLabel,
-  }) async {
-    final ctrl = TextEditingController();
-    final labelCtrl = TextEditingController(text: defaultLabel ?? '');
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: ctrl,
-              decoration: const InputDecoration(labelText: 'URL или путь'),
-            ),
-            const SizedBox(height: 8),
-            TextField(
-              controller: labelCtrl,
-              decoration: const InputDecoration(labelText: 'Подпись'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Отправить')),
-        ],
-      ),
+  Future<void> _pickAndSendAttachment(String type) async {
+    FileType pickerType = FileType.any;
+    if (type == 'image' || type == 'gif' || type == 'sticker') {
+      pickerType = FileType.image;
+    } else if (type == 'video') {
+      pickerType = FileType.video;
+    }
+
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: false,
+      withData: true,
+      type: pickerType,
     );
-    if (ok != true) return;
-    final url = ctrl.text.trim();
-    if (url.isEmpty) return;
-    await _db.from('messages').insert({
-      'conversation_id': widget.conversationId,
-      'sender_id': _me,
-      'body': labelCtrl.text.trim().isEmpty ? title : labelCtrl.text.trim(),
-      'message_type': type,
-      'media_url': url,
-      'file_name': labelCtrl.text.trim(),
-    });
+
+    if (result == null || result.files.isEmpty) return;
+    final picked = result.files.single;
+
+    Uint8List? bytes = picked.bytes;
+    if (bytes == null && picked.path != null) {
+      bytes = await File(picked.path!).readAsBytes();
+    }
+    if (bytes == null) return;
+
+    final name = (picked.name.isEmpty ? 'file_${DateTime.now().millisecondsSinceEpoch}' : picked.name)
+        .replaceAll(RegExp(r'[^a-zA-Z0-9._-]'), '_');
+    final objectPath = '${widget.conversationId}/${DateTime.now().millisecondsSinceEpoch}_$name';
+
+    try {
+      await _db.storage.from('chat-media').uploadBinary(
+            objectPath,
+            bytes,
+            fileOptions: FileOptions(
+              upsert: false,
+              contentType: picked.mimeType ?? 'application/octet-stream',
+            ),
+          );
+
+      final url = _db.storage.from('chat-media').getPublicUrl(objectPath);
+
+      await _db.from('messages').insert({
+        'conversation_id': widget.conversationId,
+        'sender_id': _me,
+        'body': picked.name,
+        'message_type': type,
+        'media_url': url,
+        'file_name': picked.name,
+        'mime_type': picked.mimeType,
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Ошибка отправки файла: $e')),
+      );
+    }
   }
 
   Future<void> _sendLocation() async {
@@ -1282,19 +1418,11 @@ class _ChatPageState extends State<ChatPage> {
 
     switch (action) {
       case 'sticker':
-        await _sendMediaLink(type: 'sticker', title: 'Стикер', defaultLabel: 'Стикер');
-        break;
       case 'image':
-        await _sendMediaLink(type: 'image', title: 'Изображение');
-        break;
       case 'gif':
-        await _sendMediaLink(type: 'gif', title: 'GIF');
-        break;
       case 'video':
-        await _sendMediaLink(type: 'video', title: 'Видео');
-        break;
       case 'file':
-        await _sendMediaLink(type: 'file', title: 'Файл');
+        await _pickAndSendAttachment(action!);
         break;
       case 'location':
         await _sendLocation();
@@ -1305,12 +1433,41 @@ class _ChatPageState extends State<ChatPage> {
   }
 
   Future<void> _deleteMessage(String id) async {
-    await _db.from('messages').delete().eq('id', id).eq('sender_id', _me);
+    await _db.from('messages').delete().eq('id', id);
+  }
+
+  Future<void> _editMessage(String id, String currentText) async {
+    final ctrl = TextEditingController(text: currentText);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Редактировать сообщение'),
+        content: TextField(
+          controller: ctrl,
+          minLines: 1,
+          maxLines: 5,
+          decoration: const InputDecoration(hintText: 'Новый текст'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Сохранить')),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+    final next = ctrl.text.trim();
+    if (next.isEmpty) return;
+
+    await _db.from('messages').update({'body': next}).eq('id', id);
   }
 
   Future<void> _onMessageLongPress(Map<String, dynamic> message) async {
     final lang = widget.settings.lang;
     final isMine = message['sender_id'] == _me;
+    final canModerateOthers = _isGroup && (_myRole == 'owner' || _myRole == 'admin');
+    final canDelete = isMine || canModerateOthers;
+
     final action = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -1323,6 +1480,12 @@ class _ChatPageState extends State<ChatPage> {
               onTap: () => Navigator.of(ctx).pop('copy'),
             ),
             if (isMine)
+              ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Редактировать'),
+                onTap: () => Navigator.of(ctx).pop('edit'),
+              ),
+            if (canDelete)
               ListTile(
                 leading: const Icon(Icons.delete_outline_rounded),
                 title: Text(tr(lang, 'delete')),
@@ -1338,7 +1501,9 @@ class _ChatPageState extends State<ChatPage> {
       await Clipboard.setData(ClipboardData(text: message['body'].toString()));
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Скопировано')));
-    } else if (action == 'delete' && isMine) {
+    } else if (action == 'edit' && isMine) {
+      await _editMessage(message['id'].toString(), message['body']?.toString() ?? '');
+    } else if (action == 'delete' && canDelete) {
       await _deleteMessage(message['id'].toString());
     }
   }
@@ -1395,8 +1560,25 @@ class _ChatPageState extends State<ChatPage> {
                                 Text(m['body']?.toString() ?? ''),
                                 if ((m['media_url'] ?? '').toString().isNotEmpty)
                                   Padding(
-                                    padding: const EdgeInsets.only(top: 4),
-                                    child: Text((m['media_url']).toString(), style: const TextStyle(fontSize: 12, color: Colors.white70)),
+                                    padding: const EdgeInsets.only(top: 6),
+                                    child: m['message_type'] == 'image' || m['message_type'] == 'gif' || m['message_type'] == 'sticker'
+                                        ? ClipRRect(
+                                            borderRadius: BorderRadius.circular(12),
+                                            child: Image.network(
+                                              (m['media_url']).toString(),
+                                              width: 180,
+                                              height: 180,
+                                              fit: BoxFit.cover,
+                                              errorBuilder: (_, __, ___) => Text(
+                                                (m['media_url']).toString(),
+                                                style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                              ),
+                                            ),
+                                          )
+                                        : Text(
+                                            (m['media_url']).toString(),
+                                            style: const TextStyle(fontSize: 12, color: Colors.white70),
+                                          ),
                                   ),
                                 if (m['message_type'] == 'location' && m['latitude'] != null && m['longitude'] != null)
                                   Padding(
@@ -1406,9 +1588,7 @@ class _ChatPageState extends State<ChatPage> {
                               ]),
                               const SizedBox(height: 4),
                               Text(
-                                isMine
-                                    ? '✓ ${timeago.format(ts, locale: 'en_short')}'
-                                    : timeago.format(ts, locale: 'en_short'),
+                                '${isMine ? '✓ ' : ''}${timeago.format(ts, locale: 'en_short')}${m['edited_at'] != null ? ' · изм.' : ''}',
                                 style: const TextStyle(fontSize: 11, color: Colors.white70),
                               ),
                             ],

@@ -13,6 +13,7 @@ dependencies:
   supabase_flutter: ^2.6.0
   timeago: ^3.7.0
   shared_preferences: ^2.3.2
+  file_picker: ^8.1.2
 
 dev_dependencies:
   flutter_test:
