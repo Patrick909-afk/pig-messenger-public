@@ -1,7 +1,7 @@
-name: pig_messenger
-description: PIG MESSENGER - Flutter messenger for friends with Supabase backend.
+name: pmessenger
+description: PMessenger - стильный мессенджер для друзей на Flutter + Supabase.
 publish_to: "none"
-version: 1.0.0+1
+version: 1.1.0+2
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -12,6 +12,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   supabase_flutter: ^2.6.0
   timeago: ^3.7.0
+  shared_preferences: ^2.3.2
 
 dev_dependencies:
   flutter_test:
@@ -23,6 +24,11 @@ flutter:
   uses-material-design: true
   assets:
     - assets/icons/
+    - assets/fonts/
+  fonts:
+    - family: Monocraft
+      fonts:
+        - asset: assets/fonts/Monocraft.ttf
 
 flutter_launcher_icons:
   android: true

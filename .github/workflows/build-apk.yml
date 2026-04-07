@@ -32,7 +32,7 @@ jobs:
         run: |
           cp pubspec.yaml /tmp/pubspec.yaml
           cp lib/main.dart /tmp/main.dart
-          flutter create . --platforms=android --project-name pig_messenger --org com.pig --overwrite
+          flutter create . --platforms=android --project-name pmessenger --org com.pmessenger --overwrite
           cp /tmp/pubspec.yaml pubspec.yaml
           cp /tmp/main.dart lib/main.dart
 
@@ -49,5 +49,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: apk-${{ github.run_number }}
-          name: PIG MESSENGER APK ${{ github.run_number }}
+          name: PMessenger APK ${{ github.run_number }}
           files: build/app/outputs/flutter-apk/app-release.apk

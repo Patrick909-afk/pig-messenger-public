@@ -1,33 +1,27 @@
-# PIG MESSENGER
+# PMessenger
 
-Flutter messenger for friends with Supabase backend.
+Flutter-мессенджер для друзей на Supabase.
 
-## Done
-- Auth (email/password) via Supabase.
-- Friends list from `profiles`.
-- DM creation via SQL RPC `start_dm(other_user uuid)`.
-- Realtime chat from `messages` table.
-- Android minimum version: 5.0 (API 21).
-- Round PNG icon created from your source image.
+## Что есть
+- Авторизация email/password через Supabase.
+- Личные чаты и realtime сообщения.
+- Русский интерфейс по умолчанию.
+- Переключение языка на казахский в настройках.
+- Визуальные эффекты в настройках: Liquid Glass, блюр, прозрачность.
+- Глобальный шрифт Monocraft.
+- Android minSdk 21 (Android 5.0).
 
-## Project structure
-- `lib/main.dart` - app UI and Supabase integration.
-- `supabase/schema.sql` - full database schema + RLS policies + triggers + RPC.
-- `supabase/project_info.md` - created project info and keys.
-- `assets/icons/app_icon_round.png` - generated round app icon.
-- `scripts/create_project_and_schema.sh` - create project + apply schema via Supabase API.
-- `scripts/apply_schema.sh` - apply schema to existing Supabase project.
+## Основные файлы
+- `lib/main.dart`
+- `pubspec.yaml`
+- `supabase/schema.sql`
+- `assets/fonts/Monocraft.ttf`
+- `assets/icons/app_icon_round.png`
+- `.github/workflows/build-apk.yml`
 
-## Run
-1. Install Flutter SDK (stable channel).
-2. In this folder run:
-
+## Сборка
 ```bash
 flutter pub get
 flutter pub run flutter_launcher_icons
-flutter run \
-  --dart-define=SUPABASE_URL=https://tmgiciwryliplkvewlhp.supabase.co \
-  --dart-define=SUPABASE_ANON_KEY=YOUR_ANON_KEY
+flutter build apk --release
 ```
-
-If you keep default constants from `lib/main.dart`, `--dart-define` is optional.

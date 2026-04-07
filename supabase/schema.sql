@@ -132,11 +132,13 @@ alter table public.conversation_participants enable row level security;
 alter table public.messages enable row level security;
 
 -- profiles policies
+drop policy if exists "profiles_select_all_auth" on public.profiles;
 create policy "profiles_select_all_auth"
 on public.profiles
 for select
 using (auth.role() = 'authenticated');
 
+drop policy if exists "profiles_update_self" on public.profiles;
 create policy "profiles_update_self"
 on public.profiles
 for update
@@ -144,6 +146,7 @@ using (auth.uid() = id)
 with check (auth.uid() = id);
 
 -- conversations policies
+drop policy if exists "conversations_select_member" on public.conversations;
 create policy "conversations_select_member"
 on public.conversations
 for select
@@ -154,17 +157,20 @@ using (
   )
 );
 
+drop policy if exists "conversations_insert_authenticated" on public.conversations;
 create policy "conversations_insert_authenticated"
 on public.conversations
 for insert
 with check (auth.uid() = created_by);
 
 -- participant policies
+drop policy if exists "participants_select_self" on public.conversation_participants;
 create policy "participants_select_self"
 on public.conversation_participants
 for select
 using (user_id = auth.uid());
 
+drop policy if exists "participants_insert_self_or_creator" on public.conversation_participants;
 create policy "participants_insert_self_or_creator"
 on public.conversation_participants
 for insert
@@ -177,6 +183,7 @@ with check (
 );
 
 -- messages policies
+drop policy if exists "messages_select_member" on public.messages;
 create policy "messages_select_member"
 on public.messages
 for select
@@ -188,6 +195,7 @@ using (
   )
 );
 
+drop policy if exists "messages_insert_sender_member" on public.messages;
 create policy "messages_insert_sender_member"
 on public.messages
 for insert
