@@ -32,9 +32,15 @@ jobs:
         run: |
           cp pubspec.yaml /tmp/pubspec.yaml
           cp lib/main.dart /tmp/main.dart
+          cp android/app/src/main/AndroidManifest.xml /tmp/AndroidManifest.xml
+          cp android/app/build.gradle.kts /tmp/app.build.gradle.kts
+          cp android/app/src/main/res/values/strings.xml /tmp/strings.xml
           flutter create . --platforms=android --project-name pmessenger --org com.pmessenger --overwrite
           cp /tmp/pubspec.yaml pubspec.yaml
           cp /tmp/main.dart lib/main.dart
+          cp /tmp/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          cp /tmp/app.build.gradle.kts android/app/build.gradle.kts
+          cp /tmp/strings.xml android/app/src/main/res/values/strings.xml
 
       - name: Install dependencies
         run: flutter pub get
